@@ -18,6 +18,17 @@
     var folderStats = {};
     var recommendedMoveFolders = [];
     var userRules = [];
+    var attachmentFlagsByUid = {};
+    var attachmentFlagsOrder = [];
+    var detailCacheByKey = {};
+    var detailCacheOrder = [];
+
+    var CACHE_LIMITS = {
+        detailItems: 100,
+        attachmentFlagItems: 2000
+    };
+
+    var LIST_CACHE_PREFIX = 'ahx_wp_mail:list:';
 
     function deleteCurrentMail() {
         if (!currentMail) { return; }
@@ -118,6 +129,7 @@
         $(document).on('click', '.ahx-mail-folder', function () {
             $('.ahx-mail-folder').removeClass('ahx-mail-folder--active');
             $(this).addClass('ahx-mail-folder--active');
+            showListPanel(true);
             state.folder = $(this).data('folder');
             state.page   = 1;
             loadEmails();
@@ -129,7 +141,7 @@
             state.folder = 'INBOX';
             state.page = 1;
             syncRuleAccountSelection(true);
-            showListPanel();
+            showListPanel(true);
             loadEmails();
             updateFolderToolbar();
         });
@@ -296,6 +308,17 @@
             setStatus('Lädt…');
         }
 
+        var cacheKey = getListCacheKey();
+        if (!silent) {
+            var cachedPayload = readListCache(cacheKey);
+            if (cachedPayload) {
+                applyListPayload(cachedPayload, true);
+                setStaleIndicator(true);
+            } else {
+                setStaleIndicator(false);
+            }
+        }
+
         $.post(ahxMail.ajaxUrl, {
             action: 'ahx_wp_mail_fetch_emails',
             nonce:  ahxMail.nonce,
@@ -305,23 +328,19 @@
         })
         .done(function (resp) {
             if (resp.success) {
-                if (resp.data.account_key) {
-                    state.accountKey = resp.data.account_key;
-                    $('#ahx-mail-account-switch').val(state.accountKey);
-                }
-                folderStats = (resp.data.folder_stats && typeof resp.data.folder_stats === 'object') ? resp.data.folder_stats : {};
-                renderFolders(resp.data.folders, folderStats);
-                renderEmailList(resp.data.emails);
-                renderPagination(resp.data.emails, resp.data.page);
-                renderCurrentFolderStats(resp.data.current_folder_stats, resp.data.emails);
+                applyListPayload(resp.data, false);
+                writeListCache(cacheKey, resp.data);
+                setStaleIndicator(false);
                 if (!silent) {
                     setStatus('');
                 }
             } else {
+                setStaleIndicator(false);
                 setStatus('Fehler: ' + (resp.data ? resp.data.message : 'Unbekannter Fehler'));
             }
         })
         .fail(function () {
+            setStaleIndicator(false);
             if (!silent) {
                 setStatus('Verbindungsfehler. Bitte Seite neu laden.');
             }
@@ -333,6 +352,313 @@
             if (state.pendingReload) {
                 var queuedSilent = state.pendingReloadSilent;
                 loadEmails(queuedSilent);
+            }
+        });
+    }
+
+    function applyListPayload(data, fromCache) {
+        if (!data || typeof data !== 'object') {
+            return;
+        }
+
+        if (data.account_key) {
+            state.accountKey = data.account_key;
+            $('#ahx-mail-account-switch').val(state.accountKey);
+        }
+
+        folderStats = (data.folder_stats && typeof data.folder_stats === 'object') ? data.folder_stats : {};
+        renderFolders(data.folders, folderStats);
+        renderEmailList(data.emails);
+        renderPagination(data.emails, data.page || state.page);
+        renderCurrentFolderStats(data.current_folder_stats, data.emails);
+
+        if (data.attachment_flags && typeof data.attachment_flags === 'object') {
+            Object.keys(data.attachment_flags).forEach(function (uid) {
+                rememberAttachmentFlag(uid, data.attachment_flags[uid]);
+            });
+            applyAttachmentFlagsToRows(data.attachment_flags);
+        }
+
+        fetchDeferredFolderStats(data.deferred_stats_folders || []);
+        fetchAttachmentFlagsForVisibleRows(data.emails, fromCache);
+    }
+
+    function fetchDeferredFolderStats(folders) {
+        if (!Array.isArray(folders) || folders.length === 0) {
+            return;
+        }
+
+        var missing = folders.filter(function (folder) {
+            return folder && (!folderStats[folder] || typeof folderStats[folder] !== 'object');
+        });
+
+        if (missing.length === 0) {
+            return;
+        }
+
+        $.post(ahxMail.ajaxUrl, {
+            action: 'ahx_wp_mail_fetch_folder_stats',
+            nonce: ahxMail.nonce,
+            account_key: state.accountKey,
+            folders: missing,
+        })
+        .done(function (resp) {
+            if (!resp.success || !resp.data || typeof resp.data.folder_stats !== 'object') {
+                return;
+            }
+
+            Object.keys(resp.data.folder_stats).forEach(function (folder) {
+                folderStats[folder] = resp.data.folder_stats[folder];
+            });
+
+            if (folderList && folderList.length) {
+                renderFolders(folderList, folderStats);
+            }
+            renderCurrentFolderStats(folderStats[state.folder] || {}, null);
+        });
+    }
+
+    function getListCacheKey() {
+        return LIST_CACHE_PREFIX + [
+            state.accountKey || '',
+            state.folder || 'INBOX',
+            state.page || 1
+        ].join(':');
+    }
+
+    function getListCacheMaxAgeMs() {
+        var folder = String(state.folder || 'INBOX').toLowerCase();
+        var page = parseInt(state.page || 1, 10);
+        var total = getKnownCurrentFolderTotal();
+        if (isNaN(page) || page < 1) {
+            page = 1;
+        }
+
+        var volumeBonus = 0;
+        if (total >= 5000) {
+            volumeBonus = 90000;
+        } else if (total >= 1000) {
+            volumeBonus = 45000;
+        } else if (total >= 250) {
+            volumeBonus = 15000;
+        }
+
+        if (folder === 'inbox') {
+            return page === 1 ? 10000 : ((page <= 3 ? 20000 : 45000) + Math.min(30000, volumeBonus));
+        }
+
+        if (folder.indexOf('archive') === 0 || folder.indexOf('archives/') === 0) {
+            return (page === 1 ? 60000 : 180000) + volumeBonus;
+        }
+
+        if (/(trash|papierkorb|spam|junk)/i.test(folder)) {
+            return (page === 1 ? 30000 : 90000) + Math.min(60000, volumeBonus);
+        }
+
+        return (page === 1 ? 20000 : 60000) + Math.min(45000, volumeBonus);
+    }
+
+    function getKnownCurrentFolderTotal() {
+        var stats = folderStats && folderStats[state.folder] ? folderStats[state.folder] : null;
+        var total = stats ? parseInt(stats.total || 0, 10) : 0;
+        if (!isNaN(total) && total > 0) {
+            return total;
+        }
+
+        var text = ($('#ahx-mail-folder-stats').text() || '').match(/Nachrichten gesamt:\s*(\d+)/i);
+        if (text && text[1]) {
+            total = parseInt(text[1], 10);
+            if (!isNaN(total) && total > 0) {
+                return total;
+            }
+        }
+
+        var firstRowTotal = $('#ahx-mail-tbody tr').first().data('total');
+        total = parseInt(firstRowTotal || 0, 10);
+        return isNaN(total) ? 0 : total;
+    }
+
+    function setStaleIndicator(show) {
+        var $indicator = $('#ahx-mail-stale-indicator');
+        if (!$indicator.length) {
+            return;
+        }
+
+        if (show) {
+            $indicator.show();
+        } else {
+            $indicator.hide();
+        }
+    }
+
+    function readListCache(cacheKey) {
+        try {
+            var raw = sessionStorage.getItem(cacheKey);
+            if (!raw) {
+                return null;
+            }
+            var parsed = JSON.parse(raw);
+            if (!parsed || !parsed.ts || !parsed.payload) {
+                return null;
+            }
+            if ((Date.now() - parsed.ts) > getListCacheMaxAgeMs()) {
+                sessionStorage.removeItem(cacheKey);
+                return null;
+            }
+            return parsed.payload;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    function writeListCache(cacheKey, payload) {
+        try {
+            sessionStorage.setItem(cacheKey, JSON.stringify({
+                ts: Date.now(),
+                payload: payload
+            }));
+        } catch (e) {
+            // Ignore storage quota / private mode errors.
+        }
+    }
+
+    function getRememberedAttachmentFlag(uid) {
+        uid = String(uid || '');
+        if (!uid || !attachmentFlagsByUid.hasOwnProperty(uid)) {
+            return null;
+        }
+
+        var idx = attachmentFlagsOrder.indexOf(uid);
+        if (idx !== -1) {
+            attachmentFlagsOrder.splice(idx, 1);
+        }
+        attachmentFlagsOrder.push(uid);
+
+        return !!attachmentFlagsByUid[uid];
+    }
+
+    function rememberAttachmentFlag(uid, value) {
+        uid = String(uid || '');
+        if (!uid) {
+            return;
+        }
+
+        if (attachmentFlagsByUid.hasOwnProperty(uid)) {
+            var idx = attachmentFlagsOrder.indexOf(uid);
+            if (idx !== -1) {
+                attachmentFlagsOrder.splice(idx, 1);
+            }
+        }
+
+        attachmentFlagsByUid[uid] = !!value;
+        attachmentFlagsOrder.push(uid);
+
+        while (attachmentFlagsOrder.length > CACHE_LIMITS.attachmentFlagItems) {
+            var oldestUid = attachmentFlagsOrder.shift();
+            if (oldestUid && attachmentFlagsByUid.hasOwnProperty(oldestUid)) {
+                delete attachmentFlagsByUid[oldestUid];
+            }
+        }
+    }
+
+    function fetchAttachmentFlagsForVisibleRows(emails, fromCache) {
+        if (!Array.isArray(emails) || emails.length === 0) {
+            return;
+        }
+
+        var uids = [];
+        emails.forEach(function (mail) {
+            if (!mail || !mail.uid) {
+                return;
+            }
+            var uid = String(mail.uid);
+            var rememberedFlag = getRememberedAttachmentFlag(uid);
+            if (rememberedFlag !== null) {
+                mail.has_attachments = rememberedFlag;
+                return;
+            }
+            uids.push(parseInt(uid, 10));
+        });
+
+        if (uids.length === 0) {
+            return;
+        }
+
+        $.post(ahxMail.ajaxUrl, {
+            action: 'ahx_wp_mail_fetch_attachment_flags',
+            nonce: ahxMail.nonce,
+            account_key: state.accountKey,
+            folder: state.folder,
+            uids: uids,
+        })
+        .done(function (resp) {
+            if (!resp.success || !resp.data || typeof resp.data.flags !== 'object') {
+                return;
+            }
+
+            Object.keys(resp.data.flags).forEach(function (uid) {
+                rememberAttachmentFlag(uid, resp.data.flags[uid]);
+            });
+            applyAttachmentFlagsToRows(resp.data.flags);
+        });
+    }
+
+    function getCachedDetail(cacheKey) {
+        if (!cacheKey || !detailCacheByKey.hasOwnProperty(cacheKey)) {
+            return null;
+        }
+
+        var idx = detailCacheOrder.indexOf(cacheKey);
+        if (idx !== -1) {
+            detailCacheOrder.splice(idx, 1);
+        }
+        detailCacheOrder.push(cacheKey);
+
+        return detailCacheByKey[cacheKey];
+    }
+
+    function putCachedDetail(cacheKey, value) {
+        if (!cacheKey || !value || typeof value !== 'object') {
+            return;
+        }
+
+        if (detailCacheByKey.hasOwnProperty(cacheKey)) {
+            var idx = detailCacheOrder.indexOf(cacheKey);
+            if (idx !== -1) {
+                detailCacheOrder.splice(idx, 1);
+            }
+        }
+
+        detailCacheByKey[cacheKey] = value;
+        detailCacheOrder.push(cacheKey);
+
+        while (detailCacheOrder.length > CACHE_LIMITS.detailItems) {
+            var oldestKey = detailCacheOrder.shift();
+            if (oldestKey && detailCacheByKey.hasOwnProperty(oldestKey)) {
+                delete detailCacheByKey[oldestKey];
+            }
+        }
+    }
+
+    function applyAttachmentFlagsToRows(flags) {
+        var map = flags || {};
+        $('#ahx-mail-tbody tr').each(function () {
+            var $row = $(this);
+            var uid = String($row.data('uid') || '');
+            if (!uid || !map.hasOwnProperty(uid)) {
+                return;
+            }
+
+            var has = !!map[uid];
+            var $subjectCell = $row.find('.ahx-mail-col-subject');
+            $subjectCell.find('.ahx-mail-attachment-indicator').remove();
+            if (has) {
+                $subjectCell.prepend(
+                    $('<span>')
+                        .addClass('ahx-mail-attachment-indicator')
+                        .attr('title', 'Enthaelt Anhaenge')
+                        .text('📎')
+                );
             }
         });
     }
@@ -465,7 +791,7 @@
         folderList = folders;
         populateMoveDropdowns(folders);
 
-        if (currentMail) {
+        if (currentMail && $('#ahx-mail-detail-panel').is(':visible')) {
             loadDetailMoveRecommendations();
         }
     }
@@ -603,6 +929,14 @@
     function loadEmail(uid, folder) {
         setStatus('Lädt Nachricht…');
 
+        var cacheKey = [state.accountKey || '', folder || state.folder || '', String(uid || '')].join('::');
+        var cachedDetail = getCachedDetail(cacheKey);
+        if (cachedDetail) {
+            showDetailPanel(cachedDetail);
+            setStatus('');
+            return;
+        }
+
         $.post(ahxMail.ajaxUrl, {
             action: 'ahx_wp_mail_fetch_email',
             nonce:  ahxMail.nonce,
@@ -628,6 +962,7 @@
                     }
                 }
 
+                putCachedDetail(cacheKey, resp.data);
                 showDetailPanel(resp.data);
                 if ((resp.data.mark_read_mode || 'open') === 'open') {
                     $('#ahx-mail-tbody tr').filter(function () {
@@ -931,7 +1266,11 @@
         });
     }
 
-    function showListPanel() {
+    function showListPanel(resetDetailState) {
+        if (resetDetailState) {
+            currentMail = null;
+            state.openFolder = '';
+        }
         hideStickyActions();
         $('#ahx-mail-detail-panel').hide();
         $('#ahx-mail-list-panel').show();

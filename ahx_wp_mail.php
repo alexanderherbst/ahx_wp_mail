@@ -2,7 +2,7 @@
 /**
  * Plugin Name: AHX WP Mail
  * Description: IMAP-Postfach-Viewer im Frontend mit benutzerspezifischen Zugangsdaten.
- * Version: v0.2.1
+ * Version: v0.3.0
  * Author: Alexander Herbst
  * Author URI: https://familie-herbst.de/ahx
  * License: GPL2
@@ -14,7 +14,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('AHX_WP_MAIL_VERSION', 'v0.2.1');
+define('AHX_WP_MAIL_VERSION', 'v0.3.0');
 define('AHX_WP_MAIL_FILE', __FILE__);
 define('AHX_WP_MAIL_DIR', plugin_dir_path(__FILE__));
 define('AHX_WP_MAIL_URL', plugin_dir_url(__FILE__));
@@ -696,6 +696,245 @@ function ahx_wp_mail_get_effective_imap_settings_for_user($user_id, $account_key
     );
 }
 
+/**
+ * Liefert eine kompakte Scope-ID fuer benutzer-/kontospezifische Caches.
+ *
+ * @param int    $user_id
+ * @param string $account_key
+ * @return string
+ */
+function ahx_wp_mail_cache_scope($user_id, $account_key) {
+    return (string) ((int) $user_id) . ':' . sanitize_key((string) $account_key);
+}
+
+/**
+ * Liefert die aktuelle Cache-Version fuer einen Scope.
+ *
+ * @param int    $user_id
+ * @param string $account_key
+ * @return int
+ */
+function ahx_wp_mail_get_cache_version($user_id, $account_key) {
+    $scope = ahx_wp_mail_cache_scope($user_id, $account_key);
+    $key = 'ahx_wp_mail_cache_v_' . md5($scope);
+    $version = (int) get_transient($key);
+    return $version > 0 ? $version : 1;
+}
+
+/**
+ * Erhoeht die Cache-Version eines Scopes, um alle Schluessel logisch zu invalidieren.
+ *
+ * @param int    $user_id
+ * @param string $account_key
+ * @return int
+ */
+function ahx_wp_mail_bump_cache_version($user_id, $account_key) {
+    $scope = ahx_wp_mail_cache_scope($user_id, $account_key);
+    $key = 'ahx_wp_mail_cache_v_' . md5($scope);
+    $version = ahx_wp_mail_get_cache_version($user_id, $account_key) + 1;
+    set_transient($key, $version, DAY_IN_SECONDS * 7);
+    return $version;
+}
+
+/**
+ * Erstellt einen stabilen Cache-Key fuer Mail-AJAX-Payloads.
+ *
+ * @param int    $user_id
+ * @param string $account_key
+ * @param string $bucket
+ * @param array  $parts
+ * @return string
+ */
+function ahx_wp_mail_cache_key($user_id, $account_key, $bucket, $parts = array()) {
+    $version = ahx_wp_mail_get_cache_version($user_id, $account_key);
+    $payload = wp_json_encode(array(
+        'u' => (int) $user_id,
+        'a' => sanitize_key((string) $account_key),
+        'b' => (string) $bucket,
+        'v' => $version,
+        'p' => is_array($parts) ? $parts : array(),
+    ));
+    return 'ahx_wp_mail_' . md5((string) $payload);
+}
+
+/**
+ * Liefert eine passende TTL fuer Listen-Caches je nach Ordner und Seitentiefe.
+ *
+ * @param string $folder
+ * @param int    $page
+ * @param int    $total_messages
+ * @return int
+ */
+function ahx_wp_mail_get_list_cache_ttl($folder, $page, $total_messages = 0) {
+    $folder = strtolower(trim((string) $folder));
+    $page = max(1, (int) $page);
+    $total_messages = max(0, (int) $total_messages);
+
+    $volume_bonus = 0;
+    if ($total_messages >= 5000) {
+        $volume_bonus = 90;
+    } elseif ($total_messages >= 1000) {
+        $volume_bonus = 45;
+    } elseif ($total_messages >= 250) {
+        $volume_bonus = 15;
+    }
+
+    if ($folder === 'inbox') {
+        return $page === 1 ? 10 : (($page <= 3 ? 20 : 45) + min(30, $volume_bonus));
+    }
+
+    if (strpos($folder, 'archive') === 0 || strpos($folder, 'archives/') === 0) {
+        return ($page === 1 ? 60 : 180) + $volume_bonus;
+    }
+
+    if (preg_match('/trash|papierkorb|spam|junk/i', $folder)) {
+        return ($page === 1 ? 30 : 90) + min(60, $volume_bonus);
+    }
+
+    return ($page === 1 ? 20 : 60) + min(45, $volume_bonus);
+}
+
+/**
+ * Liefert eine passende TTL fuer Ordnerzaehler.
+ *
+ * @param string $folder
+ * @return int
+ */
+function ahx_wp_mail_get_folder_stats_cache_ttl($folder) {
+    $folder = strtolower(trim((string) $folder));
+
+    if ($folder === 'inbox') {
+        return 12;
+    }
+
+    if (strpos($folder, 'archive') === 0 || strpos($folder, 'archives/') === 0) {
+        return 120;
+    }
+
+    if (preg_match('/trash|papierkorb|spam|junk/i', $folder)) {
+        return 45;
+    }
+
+    return 30;
+}
+
+/**
+ * Liefert eine passende TTL fuer Attachment-Flags.
+ *
+ * @param string $folder
+ * @return int
+ */
+function ahx_wp_mail_get_attachment_flag_cache_ttl($folder) {
+    $folder = strtolower(trim((string) $folder));
+
+    if (strpos($folder, 'archive') === 0 || strpos($folder, 'archives/') === 0) {
+        return 1800;
+    }
+
+    return 600;
+}
+
+/**
+ * Liefert einen Cache-Key fuer die Statistiken eines einzelnen Ordners.
+ *
+ * @param int    $user_id
+ * @param string $account_key
+ * @param string $folder
+ * @return string
+ */
+function ahx_wp_mail_get_single_folder_stats_cache_key($user_id, $account_key, $folder) {
+    return ahx_wp_mail_cache_key($user_id, $account_key, 'folder_stats_single', array(
+        'folder' => (string) $folder,
+    ));
+}
+
+/**
+ * Liefert priorisierte Ordner fuer den initialen Stats-Load.
+ *
+ * @param string[] $folders
+ * @param string   $current_folder
+ * @param int      $limit
+ * @return string[]
+ */
+function ahx_wp_mail_get_prioritized_stats_folders($folders, $current_folder, $limit = 10) {
+    if (!is_array($folders) || empty($folders)) {
+        return array();
+    }
+
+    $limit = max(1, (int) $limit);
+    $current_folder = (string) $current_folder;
+    $priority_terms = array('INBOX', 'Sent', 'Drafts', 'Trash', 'Spam', 'Archive', 'Archives');
+
+    $scored = array();
+    foreach ($folders as $folder) {
+        $folder = (string) $folder;
+        if ($folder === '') {
+            continue;
+        }
+
+        $score = 0;
+        if (strcasecmp($folder, $current_folder) === 0) {
+            $score += 1000;
+        }
+        if (strcasecmp($folder, 'INBOX') === 0) {
+            $score += 800;
+        }
+
+        foreach ($priority_terms as $term) {
+            if (stripos($folder, $term) !== false) {
+                $score += 120;
+                break;
+            }
+        }
+
+        $depth = substr_count(str_replace('\\', '/', $folder), '/');
+        $score -= min(50, $depth * 5);
+
+        $scored[] = array('folder' => $folder, 'score' => $score);
+    }
+
+    usort($scored, static function ($a, $b) {
+        $sa = (int) ($a['score'] ?? 0);
+        $sb = (int) ($b['score'] ?? 0);
+        if ($sa === $sb) {
+            return strcasecmp((string) ($a['folder'] ?? ''), (string) ($b['folder'] ?? ''));
+        }
+        return ($sb <=> $sa);
+    });
+
+    $result = array();
+    foreach ($scored as $row) {
+        $folder = (string) ($row['folder'] ?? '');
+        if ($folder === '') {
+            continue;
+        }
+        $result[] = $folder;
+        if (count($result) >= $limit) {
+            break;
+        }
+    }
+
+    return $result;
+}
+
+/**
+ * Liefert eine passende TTL fuer den Detail-Cache.
+ *
+ * @param string $folder
+ * @return int
+ */
+function ahx_wp_mail_get_detail_cache_ttl($folder) {
+    $folder = strtolower(trim((string) $folder));
+
+    if ($folder === 'inbox') {
+        return 120;
+    }
+    if (strpos($folder, 'archive') === 0 || strpos($folder, 'archives/') === 0) {
+        return 1800;
+    }
+    return 600;
+}
+
 // ---------------------------------------------------------------------------
 // AJAX: E-Mails laden
 // ---------------------------------------------------------------------------
@@ -731,6 +970,28 @@ function ahx_wp_mail_ajax_fetch_emails() {
         wp_send_json_error(array('message' => 'IMAP-Server nicht konfiguriert (Admin-Einstellungen oder Profil).'), 500);
     }
 
+    $effective_account_key = (string) $settings['account_key'];
+    $list_cache_key = ahx_wp_mail_cache_key($user_id, $effective_account_key, 'list', array(
+        'folder' => $folder,
+        'page' => $page,
+        'per_page' => $per_page,
+    ));
+    $cached_list = get_transient($list_cache_key);
+
+    if (is_array($cached_list) && isset($cached_list['emails'])) {
+        wp_send_json_success(array(
+            'emails'  => is_array($cached_list['emails']) ? $cached_list['emails'] : array(),
+            'folders' => isset($cached_list['folders']) && is_array($cached_list['folders']) ? $cached_list['folders'] : array(),
+            'folder_stats' => isset($cached_list['folder_stats']) && is_array($cached_list['folder_stats']) ? $cached_list['folder_stats'] : array(),
+            'current_folder_stats' => isset($cached_list['current_folder_stats']) && is_array($cached_list['current_folder_stats']) ? $cached_list['current_folder_stats'] : array('total' => 0, 'unread' => 0),
+            'deferred_stats_folders' => isset($cached_list['deferred_stats_folders']) && is_array($cached_list['deferred_stats_folders']) ? $cached_list['deferred_stats_folders'] : array(),
+            'attachment_flags' => isset($cached_list['attachment_flags']) && is_array($cached_list['attachment_flags']) ? $cached_list['attachment_flags'] : array(),
+            'page'    => $page,
+            'account_key' => $effective_account_key,
+            'cached' => true,
+        ));
+    }
+
     $imap = new AHX_WP_Mail_IMAP($host, $port, $encryption);
     $result = $imap->connect($settings['imap_user'], $settings['imap_password']);
 
@@ -738,27 +999,145 @@ function ahx_wp_mail_ajax_fetch_emails() {
         wp_send_json_error(array('message' => $result->get_error_message()), 500);
     }
 
-    $emails  = $imap->get_emails($folder, $page, $per_page);
-    $folders = $imap->get_folders();
+    // Fast-Path: keine Attachment-Analyse und keine Header-Vertiefung in der Listenansicht.
+    $emails = $imap->get_emails($folder, $page, $per_page, false, false);
+
+    $folders_cache_key = ahx_wp_mail_cache_key($user_id, $effective_account_key, 'folders', array('host' => $host));
+    $folders = get_transient($folders_cache_key);
+    $folder_stats = array();
+
+    if (!is_array($folders) || empty($folders)) {
+        $folders = $imap->get_folders();
+        if (!is_array($folders)) {
+            $folders = array();
+        }
+        set_transient($folders_cache_key, $folders, 600);
+    }
 
     if (!in_array($folder, $folders, true)) {
         $folders[] = $folder;
     }
 
-    $folder_stats = $imap->get_folder_counters($folders);
+    $folders_to_fetch = array();
+    foreach ($folders as $folder_name) {
+        $folder_name = (string) $folder_name;
+        if ($folder_name === '') {
+            continue;
+        }
+
+        $single_stats_key = ahx_wp_mail_get_single_folder_stats_cache_key($user_id, $effective_account_key, $folder_name);
+        $cached_stats = get_transient($single_stats_key);
+        if (is_array($cached_stats) && isset($cached_stats['total']) && isset($cached_stats['unread'])) {
+            $folder_stats[$folder_name] = array(
+                'total' => max(0, (int) $cached_stats['total']),
+                'unread' => max(0, (int) $cached_stats['unread']),
+            );
+            continue;
+        }
+
+        $folders_to_fetch[] = $folder_name;
+    }
+
+    $prioritized = ahx_wp_mail_get_prioritized_stats_folders($folders_to_fetch, $folder, 12);
+    $prioritized_set = array_fill_keys($prioritized, 1);
+    $deferred_stats_folders = array();
+
+    foreach ($folders_to_fetch as $folder_name) {
+        if (!isset($prioritized_set[$folder_name])) {
+            $deferred_stats_folders[] = (string) $folder_name;
+        }
+    }
+
+    if (!empty($prioritized)) {
+        $fetched_stats = $imap->get_folder_counters($prioritized);
+        if (!is_array($fetched_stats)) {
+            $fetched_stats = array();
+        }
+
+        foreach ($prioritized as $folder_name) {
+            $folder_name = (string) $folder_name;
+            $folder_stat = isset($fetched_stats[$folder_name]) && is_array($fetched_stats[$folder_name])
+                ? $fetched_stats[$folder_name]
+                : array('total' => 0, 'unread' => 0);
+
+            $folder_stats[$folder_name] = array(
+                'total' => max(0, (int) ($folder_stat['total'] ?? 0)),
+                'unread' => max(0, (int) ($folder_stat['unread'] ?? 0)),
+            );
+
+            set_transient(
+                ahx_wp_mail_get_single_folder_stats_cache_key($user_id, $effective_account_key, $folder_name),
+                $folder_stats[$folder_name],
+                ahx_wp_mail_get_folder_stats_cache_ttl($folder_name)
+            );
+        }
+    }
+
     $current_folder_stats = isset($folder_stats[$folder]) && is_array($folder_stats[$folder])
         ? $folder_stats[$folder]
         : array('total' => 0, 'unread' => 0);
 
+    $current_total = (int) ($current_folder_stats['total'] ?? 0);
+    if ($current_total <= 0 && !empty($emails) && isset($emails[0]['total'])) {
+        $current_total = max(0, (int) $emails[0]['total']);
+    }
+    $list_cache_ttl = ahx_wp_mail_get_list_cache_ttl($folder, $page, $current_total);
+
+    $attachment_flags = array();
+    if ($page === 1 && !empty($emails)) {
+        $uids = array();
+        foreach ($emails as $email_row) {
+            $uid = isset($email_row['uid']) ? (int) $email_row['uid'] : 0;
+            if ($uid > 0) {
+                $uids[] = $uid;
+            }
+        }
+
+        if (!empty($uids)) {
+            $uids = array_values(array_unique($uids));
+            if (count($uids) > 100) {
+                $uids = array_slice($uids, 0, 100);
+            }
+
+            $att_key = ahx_wp_mail_cache_key($user_id, $effective_account_key, 'att_flags', array(
+                'folder' => $folder,
+                'uids' => $uids,
+            ));
+            $cached_att = get_transient($att_key);
+            if (is_array($cached_att)) {
+                $attachment_flags = $cached_att;
+            } else {
+                $attachment_flags = $imap->get_attachment_flags_for_uids($folder, $uids);
+                if (!is_array($attachment_flags)) {
+                    $attachment_flags = array();
+                }
+                set_transient($att_key, $attachment_flags, ahx_wp_mail_get_attachment_flag_cache_ttl($folder));
+            }
+        }
+    }
+
     $imap->disconnect();
 
-    wp_send_json_success(array(
-        'emails'  => $emails,
+    $payload = array(
+        'emails'  => is_array($emails) ? $emails : array(),
         'folders' => $folders,
         'folder_stats' => $folder_stats,
         'current_folder_stats' => $current_folder_stats,
+        'deferred_stats_folders' => $deferred_stats_folders,
+        'attachment_flags' => $attachment_flags,
+    );
+    set_transient($list_cache_key, $payload, $list_cache_ttl);
+
+    wp_send_json_success(array(
+        'emails'  => $payload['emails'],
+        'folders' => $payload['folders'],
+        'folder_stats' => $payload['folder_stats'],
+        'current_folder_stats' => $payload['current_folder_stats'],
+        'deferred_stats_folders' => $payload['deferred_stats_folders'],
+        'attachment_flags' => $payload['attachment_flags'],
         'page'    => $page,
-        'account_key' => $settings['account_key'],
+        'account_key' => $effective_account_key,
+        'cached' => false,
     ));
 }
 add_action('wp_ajax_ahx_wp_mail_fetch_emails', 'ahx_wp_mail_ajax_fetch_emails');
@@ -811,7 +1190,22 @@ function ahx_wp_mail_ajax_fetch_email() {
     $mark_mode    = get_option('ahx_wp_mail_mark_read_mode', 'open');
     $mark_as_read = ($mark_mode === 'open');
 
-    $email = $imap->get_email($folder, $uid, $allow_images, $mark_as_read, $debug_mode);
+    $detail_cache_key = ahx_wp_mail_cache_key($user_id, (string) $settings['account_key'], 'email_detail', array(
+        'folder' => $folder,
+        'uid' => $uid,
+        'allow_images' => $allow_images ? 1 : 0,
+    ));
+
+    $email = (!$debug_mode) ? get_transient($detail_cache_key) : false;
+    if (!is_array($email)) {
+        $email = $imap->get_email($folder, $uid, $allow_images, $mark_as_read, $debug_mode);
+        if (!is_wp_error($email) && !$debug_mode) {
+            set_transient($detail_cache_key, $email, ahx_wp_mail_get_detail_cache_ttl($folder));
+        }
+    } elseif ($mark_as_read) {
+        $imap->mark_read($folder, $uid);
+    }
+
     $imap->disconnect();
 
     if (is_wp_error($email)) {
@@ -976,6 +1370,8 @@ function ahx_wp_mail_ajax_mark() {
         wp_send_json_error(array('message' => $r->get_error_message()), 500);
     }
 
+    ahx_wp_mail_bump_cache_version($user_id, (string) $settings['account_key']);
+
     wp_send_json_success();
 }
 add_action('wp_ajax_ahx_wp_mail_mark', 'ahx_wp_mail_ajax_mark');
@@ -1034,6 +1430,8 @@ function ahx_wp_mail_ajax_delete() {
         wp_send_json_error(array('message' => implode('; ', $errors)), 500);
     }
 
+    ahx_wp_mail_bump_cache_version($user_id, (string) $settings['account_key']);
+
     wp_send_json_success();
 }
 add_action('wp_ajax_ahx_wp_mail_delete', 'ahx_wp_mail_ajax_delete');
@@ -1091,6 +1489,8 @@ function ahx_wp_mail_ajax_move() {
     if (!empty($errors)) {
         wp_send_json_error(array('message' => implode('; ', $errors)), 500);
     }
+
+    ahx_wp_mail_bump_cache_version($user_id, (string) $settings['account_key']);
 
     wp_send_json_success();
 }
@@ -1171,6 +1571,8 @@ function ahx_wp_mail_ajax_archive() {
         wp_send_json_error(array('message' => implode('; ', $errors)), 500);
     }
 
+    ahx_wp_mail_bump_cache_version($user_id, (string) $settings['account_key']);
+
     wp_send_json_success();
 }
 add_action('wp_ajax_ahx_wp_mail_archive', 'ahx_wp_mail_ajax_archive');
@@ -1225,6 +1627,8 @@ function ahx_wp_mail_ajax_empty_trash() {
     if (is_wp_error($deleted_count)) {
         wp_send_json_error(array('message' => $deleted_count->get_error_message()), 500);
     }
+
+    ahx_wp_mail_bump_cache_version($user_id, (string) $settings['account_key']);
 
     wp_send_json_success(array(
         'message' => sprintf('%d E-Mails geloescht.', (int) $deleted_count),
@@ -1322,6 +1726,90 @@ function ahx_wp_mail_ajax_fetch_folders() {
 }
 add_action('wp_ajax_ahx_wp_mail_fetch_folders', 'ahx_wp_mail_ajax_fetch_folders');
 
+function ahx_wp_mail_ajax_fetch_folder_stats() {
+    check_ajax_referer('ahx_wp_mail_nonce', 'nonce');
+
+    if (!is_user_logged_in()) {
+        wp_send_json_error(array('message' => 'Nicht eingeloggt.'), 403);
+    }
+
+    $user_id = get_current_user_id();
+    $account_key = isset($_POST['account_key']) ? sanitize_key(wp_unslash($_POST['account_key'])) : '';
+    $folders_raw = isset($_POST['folders']) ? (array) $_POST['folders'] : array();
+    $folders = array_values(array_filter(array_map(static function ($folder) {
+        return sanitize_text_field(wp_unslash((string) $folder));
+    }, $folders_raw), static function ($folder) {
+        return $folder !== '';
+    }));
+
+    if (empty($folders)) {
+        wp_send_json_success(array('folder_stats' => array()));
+    }
+
+    if (count($folders) > 50) {
+        $folders = array_slice($folders, 0, 50);
+    }
+
+    $imap_settings = ahx_wp_mail_get_effective_imap_settings_for_user($user_id, $account_key);
+    if (empty($imap_settings['imap_user']) || empty($imap_settings['imap_password'])) {
+        wp_send_json_error(array('message' => 'Keine IMAP-Zugangsdaten hinterlegt.'), 422);
+    }
+    if ($imap_settings['host'] === '') {
+        wp_send_json_error(array('message' => 'IMAP-Server nicht konfiguriert.'), 500);
+    }
+
+    $effective_account_key = (string) $imap_settings['account_key'];
+    $folder_stats = array();
+    $missing = array();
+
+    foreach ($folders as $folder_name) {
+        $cache_key = ahx_wp_mail_get_single_folder_stats_cache_key($user_id, $effective_account_key, $folder_name);
+        $cached = get_transient($cache_key);
+        if (is_array($cached) && isset($cached['total']) && isset($cached['unread'])) {
+            $folder_stats[$folder_name] = array(
+                'total' => max(0, (int) $cached['total']),
+                'unread' => max(0, (int) $cached['unread']),
+            );
+        } else {
+            $missing[] = $folder_name;
+        }
+    }
+
+    if (!empty($missing)) {
+        $imap = new AHX_WP_Mail_IMAP($imap_settings['host'], $imap_settings['port'], $imap_settings['encryption']);
+        $result = $imap->connect($imap_settings['imap_user'], $imap_settings['imap_password']);
+        if (is_wp_error($result)) {
+            wp_send_json_error(array('message' => $result->get_error_message()), 500);
+        }
+
+        $fetched = $imap->get_folder_counters($missing);
+        $imap->disconnect();
+        if (!is_array($fetched)) {
+            $fetched = array();
+        }
+
+        foreach ($missing as $folder_name) {
+            $stat = isset($fetched[$folder_name]) && is_array($fetched[$folder_name])
+                ? $fetched[$folder_name]
+                : array('total' => 0, 'unread' => 0);
+
+            $folder_stats[$folder_name] = array(
+                'total' => max(0, (int) ($stat['total'] ?? 0)),
+                'unread' => max(0, (int) ($stat['unread'] ?? 0)),
+            );
+
+            set_transient(
+                ahx_wp_mail_get_single_folder_stats_cache_key($user_id, $effective_account_key, $folder_name),
+                $folder_stats[$folder_name],
+                ahx_wp_mail_get_folder_stats_cache_ttl($folder_name)
+            );
+        }
+    }
+
+    wp_send_json_success(array('folder_stats' => $folder_stats));
+}
+add_action('wp_ajax_ahx_wp_mail_fetch_folder_stats', 'ahx_wp_mail_ajax_fetch_folder_stats');
+
 function ahx_wp_mail_ajax_move_recommendations() {
     check_ajax_referer('ahx_wp_mail_nonce', 'nonce');
 
@@ -1365,6 +1853,75 @@ function ahx_wp_mail_ajax_move_recommendations() {
     ));
 }
 add_action('wp_ajax_ahx_wp_mail_move_recommendations', 'ahx_wp_mail_ajax_move_recommendations');
+
+// ---------------------------------------------------------------------------
+// AJAX: Attachment-Flags fuer Listenbatch nachladen
+// ---------------------------------------------------------------------------
+
+function ahx_wp_mail_ajax_fetch_attachment_flags() {
+    check_ajax_referer('ahx_wp_mail_nonce', 'nonce');
+
+    if (!is_user_logged_in()) {
+        wp_send_json_error(array('message' => 'Nicht eingeloggt.'), 403);
+    }
+
+    $user_id = get_current_user_id();
+    $account_key = isset($_POST['account_key']) ? sanitize_key(wp_unslash($_POST['account_key'])) : '';
+    $folder = isset($_POST['folder']) ? sanitize_text_field(wp_unslash($_POST['folder'])) : 'INBOX';
+    $uids_raw = isset($_POST['uids']) ? (array) $_POST['uids'] : array();
+    $uids = array_values(array_filter(array_map('intval', $uids_raw), static function ($uid) {
+        return $uid > 0;
+    }));
+
+    if (empty($uids)) {
+        wp_send_json_success(array('flags' => array()));
+    }
+
+    if (count($uids) > 200) {
+        $uids = array_slice($uids, 0, 200);
+    }
+
+    $imap_settings = ahx_wp_mail_get_effective_imap_settings_for_user($user_id, $account_key);
+    if (empty($imap_settings['imap_user']) || empty($imap_settings['imap_password'])) {
+        wp_send_json_error(array('message' => 'Keine IMAP-Zugangsdaten hinterlegt.'), 422);
+    }
+    if ($imap_settings['host'] === '') {
+        wp_send_json_error(array('message' => 'IMAP-Server nicht konfiguriert.'), 500);
+    }
+
+    $cache_key = ahx_wp_mail_cache_key($user_id, (string) $imap_settings['account_key'], 'att_flags', array(
+        'folder' => $folder,
+        'uids' => $uids,
+    ));
+    $cached_flags = get_transient($cache_key);
+    if (is_array($cached_flags)) {
+        wp_send_json_success(array(
+            'flags' => $cached_flags,
+            'cached' => true,
+        ));
+    }
+
+    $imap = new AHX_WP_Mail_IMAP($imap_settings['host'], $imap_settings['port'], $imap_settings['encryption']);
+    $result = $imap->connect($imap_settings['imap_user'], $imap_settings['imap_password']);
+    if (is_wp_error($result)) {
+        wp_send_json_error(array('message' => $result->get_error_message()), 500);
+    }
+
+    $flags = $imap->get_attachment_flags_for_uids($folder, $uids);
+    $imap->disconnect();
+
+    if (!is_array($flags)) {
+        $flags = array();
+    }
+
+    set_transient($cache_key, $flags, ahx_wp_mail_get_attachment_flag_cache_ttl($folder));
+
+    wp_send_json_success(array(
+        'flags' => $flags,
+        'cached' => false,
+    ));
+}
+add_action('wp_ajax_ahx_wp_mail_fetch_attachment_flags', 'ahx_wp_mail_ajax_fetch_attachment_flags');
 
 // ---------------------------------------------------------------------------
 // AJAX: Anhang herunterladen

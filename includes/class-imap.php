@@ -421,6 +421,42 @@ class AHX_WP_Mail_IMAP {
         return $emails;
     }
 
+    /**
+     * Liefert Attachment-Flags fuer eine Liste von UIDs in einem Ordner.
+     *
+     * @param string $folder
+     * @param int[]  $uids
+     * @return array<string,bool>
+     */
+    public function get_attachment_flags_for_uids($folder, $uids) {
+        if ($this->connection === false || !is_array($uids) || empty($uids)) {
+            return array();
+        }
+
+        if (!$this->reopen_mailbox($folder)) {
+            return array();
+        }
+
+        $flags = array();
+        foreach ($uids as $uid) {
+            $uid = (int) $uid;
+            if ($uid <= 0) {
+                continue;
+            }
+
+            $seq = (int) @imap_msgno($this->connection, $uid);
+            if ($seq <= 0) {
+                $flags[(string) $uid] = false;
+                continue;
+            }
+
+            $struct = @imap_fetchstructure($this->connection, $seq);
+            $flags[(string) $uid] = $this->has_attachments($struct);
+        }
+
+        return $flags;
+    }
+
     // -----------------------------------------------------------------------
     // E-Mail-Inhalt
     // -----------------------------------------------------------------------

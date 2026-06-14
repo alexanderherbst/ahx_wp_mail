@@ -217,6 +217,27 @@
     color: #888;
 }
 
+.ahx-mail-stale-indicator {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 8px;
+    border-radius: 999px;
+    background: #fff7ed;
+    color: #9a3412;
+    font-size: 12px;
+    white-space: nowrap;
+}
+
+.ahx-mail-stale-indicator::before {
+    content: '';
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: currentColor;
+    opacity: 0.75;
+}
+
 .ahx-mail-folder-stats {
     margin-left: auto;
     font-size: 12px;

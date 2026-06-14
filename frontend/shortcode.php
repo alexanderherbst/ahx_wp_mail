@@ -76,6 +76,9 @@ function ahx_wp_mail_shortcode($atts) {
                     &#128465; <?php esc_html_e('Papierkorb leeren', 'ahx_wp_mail'); ?>
                 </button>
                 <span class="ahx-mail-status" id="ahx-mail-status"></span>
+                <span class="ahx-mail-stale-indicator" id="ahx-mail-stale-indicator" style="display:none;">
+                    <?php esc_html_e('Zwischengespeicherte Liste, Aktualisierung läuft…', 'ahx_wp_mail'); ?>
+                </span>
                 <span class="ahx-mail-folder-stats" id="ahx-mail-folder-stats"></span>
             </div>
 
