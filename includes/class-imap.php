@@ -23,6 +23,9 @@ class AHX_WP_Mail_IMAP {
     /** @var resource|false */
     private $connection = false;
 
+    /** @var string */
+    private $last_error = '';
+
     public function __construct($host, $port = 993, $encryption = 'ssl') {
         $this->host       = (string) $host;
         $this->port       = (int) $port;
@@ -40,7 +43,10 @@ class AHX_WP_Mail_IMAP {
      * @return true|WP_Error
      */
     public function connect($username, $password) {
+        $this->last_error = '';
+
         if (!function_exists('imap_open')) {
+            $this->last_error = 'PHP-IMAP-Extension ist nicht aktiviert.';
             return new WP_Error('imap_missing', 'PHP-IMAP-Extension ist nicht aktiviert.');
         }
 
@@ -52,6 +58,7 @@ class AHX_WP_Mail_IMAP {
         if ($this->connection === false) {
             $errors = imap_errors();
             $msg    = is_array($errors) ? implode('; ', $errors) : 'Verbindung fehlgeschlagen.';
+            $this->last_error = (string) $msg;
             return new WP_Error('imap_connect_failed', esc_html($msg));
         }
 
@@ -63,6 +70,15 @@ class AHX_WP_Mail_IMAP {
             imap_close($this->connection);
             $this->connection = false;
         }
+    }
+
+    /**
+     * Letzte IMAP-Fehlermeldung der Instanz.
+     *
+     * @return string
+     */
+    public function get_last_error() {
+        return (string) $this->last_error;
     }
 
     // -----------------------------------------------------------------------
@@ -93,9 +109,176 @@ class AHX_WP_Mail_IMAP {
         return $folders;
     }
 
+    /**
+     * Liefert pro Ordner die Gesamtzahl und Anzahl ungelesener Nachrichten.
+     *
+     * @param string[] $folders
+     * @return array<string,array{total:int,unread:int}>
+     */
+    public function get_folder_counters($folders) {
+        if ($this->connection === false || !is_array($folders) || empty($folders)) {
+            return array();
+        }
+
+        $stats = array();
+        foreach ($folders as $folder) {
+            $folder = (string) $folder;
+            if ($folder === '') {
+                continue;
+            }
+
+            $mailbox = $this->build_mailbox_string($folder);
+            $status = @imap_status($this->connection, $mailbox, SA_MESSAGES | SA_UNSEEN);
+            if ($status === false) {
+                continue;
+            }
+
+            $stats[$folder] = array(
+                'total' => max(0, (int) ($status->messages ?? 0)),
+                'unread' => max(0, (int) ($status->unseen ?? 0)),
+            );
+        }
+
+        return $stats;
+    }
+
+    /**
+     * Liefert Ordner-Empfehlungen fuer einen Absender anhand vorhandener Nachrichtenanzahl.
+     *
+     * @param string[] $folders
+     * @param string   $sender_email
+     * @param string   $exclude_folder
+     * @param int      $limit
+     * @return array[] Array von ['folder' => string, 'count' => int]
+     */
+    public function get_sender_folder_recommendations($folders, $sender_email, $exclude_folder = '', $limit = 5) {
+        $sender_email = strtolower(trim((string) $sender_email));
+        if ($this->connection === false || !is_array($folders) || empty($folders) || $sender_email === '') {
+            return array();
+        }
+
+        $exclude_folder = strtolower(trim((string) $exclude_folder));
+        $limit = max(1, (int) $limit);
+        $rows = array();
+
+        // Doppelte Quotes in IMAP-Suchstring escapen.
+        $escaped_sender = str_replace('"', '\\"', $sender_email);
+        $sender_domain = '';
+        if (strpos($sender_email, '@') !== false) {
+            $parts = explode('@', $sender_email, 2);
+            $sender_domain = isset($parts[1]) ? trim((string) $parts[1]) : '';
+        }
+
+        $criteria_list = array(
+            'FROM "' . $escaped_sender . '"',
+            'HEADER FROM "' . $escaped_sender . '"',
+        );
+        if ($sender_domain !== '') {
+            $escaped_domain = str_replace('"', '\\"', $sender_domain);
+            $criteria_list[] = 'HEADER FROM "@' . $escaped_domain . '"';
+        }
+
+        foreach ($folders as $folder) {
+            $folder = (string) $folder;
+            if ($folder === '') {
+                continue;
+            }
+            if ($exclude_folder !== '' && strtolower($folder) === $exclude_folder) {
+                continue;
+            }
+
+            $mailbox = $this->build_mailbox_string($folder);
+            try {
+                $reopen_ok = @imap_reopen($this->connection, $mailbox);
+            } catch (ValueError $e) {
+                $reopen_ok = false;
+            }
+            if ($reopen_ok === false) {
+                continue;
+            }
+
+            $uid_set = array();
+            foreach ($criteria_list as $criteria) {
+                $uids = @imap_search($this->connection, $criteria, SE_UID);
+                if (!is_array($uids) || empty($uids)) {
+                    continue;
+                }
+
+                foreach ($uids as $uid) {
+                    $uid_int = (int) $uid;
+                    if ($uid_int > 0) {
+                        $uid_set[$uid_int] = 1;
+                    }
+                }
+            }
+
+            if (empty($uid_set)) {
+                continue;
+            }
+
+            $rows[] = array(
+                'folder' => $folder,
+                'count' => count($uid_set),
+            );
+        }
+
+        if (empty($rows)) {
+            return array();
+        }
+
+        usort($rows, static function ($a, $b) {
+            $ca = (int) ($a['count'] ?? 0);
+            $cb = (int) ($b['count'] ?? 0);
+            if ($ca === $cb) {
+                return strcasecmp((string) ($a['folder'] ?? ''), (string) ($b['folder'] ?? ''));
+            }
+            return ($cb <=> $ca);
+        });
+
+        return array_slice($rows, 0, $limit);
+    }
+
     // -----------------------------------------------------------------------
     // E-Mail-Liste
     // -----------------------------------------------------------------------
+
+    /**
+     * Oeffnet ein Postfach auf der bestehenden Verbindung sicher neu.
+     *
+     * Bei DNS-/Netzwerkproblemen oder bereits geschlossenem Stream liefert
+     * imap_reopen() Warnungen bzw. in PHP 8 ValueError. Beides wird hier
+     * abgefangen, damit aufrufender Code sauber abbrechen kann.
+     *
+     * @param string $folder
+     * @return bool
+     */
+    private function reopen_mailbox($folder) {
+        if ($this->connection === false) {
+            $this->last_error = 'Keine aktive IMAP-Verbindung.';
+            return false;
+        }
+
+        $mailbox = $this->build_mailbox_string($folder);
+
+        try {
+            $ok = @imap_reopen($this->connection, $mailbox);
+        } catch (ValueError $e) {
+            $this->last_error = $e->getMessage();
+            $this->connection = false;
+            return false;
+        }
+
+        if ($ok === false) {
+            $errors = imap_errors();
+            $this->last_error = is_array($errors) && !empty($errors)
+                ? implode('; ', $errors)
+                : 'imap_reopen fehlgeschlagen.';
+            $this->connection = false;
+            return false;
+        }
+
+        return true;
+    }
 
     /**
      * Gibt eine paginierte Liste von E-Mails zurück.
@@ -103,17 +286,29 @@ class AHX_WP_Mail_IMAP {
      * @param string $folder
      * @param int    $page     1-basiert
      * @param int    $per_page
+    * @param bool   $include_attachments
+    * @param bool   $precise_addresses
      * @return array
      */
-    public function get_emails($folder, $page = 1, $per_page = 20) {
+    public function get_emails($folder, $page = 1, $per_page = 20, $include_attachments = true, $precise_addresses = false) {
         if ($this->connection === false) {
             return array();
         }
 
-        $mailbox = $this->build_mailbox_string($folder);
-        imap_reopen($this->connection, $mailbox);
+        $page = max(1, (int) $page);
+        $per_page = max(1, (int) $per_page);
 
-        $total = imap_num_msg($this->connection);
+        if (!$this->reopen_mailbox($folder)) {
+            return array();
+        }
+
+        try {
+            $total = imap_num_msg($this->connection);
+        } catch (ValueError $e) {
+            $this->last_error = $e->getMessage();
+            $this->connection = false;
+            return array();
+        }
         if ($total === 0) {
             return array();
         }
@@ -121,30 +316,103 @@ class AHX_WP_Mail_IMAP {
         // Neueste E-Mails zuerst
         $start = $total - (($page - 1) * $per_page);
         $end   = max(1, $start - $per_page + 1);
+        if ($start < 1) {
+            return array();
+        }
+
+        $overview = imap_fetch_overview($this->connection, $end . ':' . $start, 0);
+        if (!is_array($overview) || empty($overview)) {
+            return array();
+        }
+
+        $overview_by_seq = array();
+        foreach ($overview as $item) {
+            $seq = isset($item->msgno) ? (int) $item->msgno : 0;
+            if ($seq > 0) {
+                $overview_by_seq[$seq] = $item;
+            }
+        }
 
         $emails = array();
         for ($i = $start; $i >= $end; $i--) {
-            $header = imap_headerinfo($this->connection, $i);
-            if (!$header) {
+            if (!isset($overview_by_seq[$i])) {
                 continue;
             }
 
-            $struct = imap_fetchstructure($this->connection, $i);
-            $has_attachments = $this->has_attachments($struct);
+            $item = $overview_by_seq[$i];
 
-            $uid = imap_uid($this->connection, $i);
-            $seen = false;
-            $overview = imap_fetch_overview($this->connection, (string) $i, 0);
-            if (is_array($overview) && isset($overview[0])) {
-                $seen = !empty($overview[0]->seen);
+            $has_attachments = false;
+            if ($include_attachments) {
+                $struct = imap_fetchstructure($this->connection, $i);
+                $has_attachments = $this->has_attachments($struct);
             }
+
+            $uid = isset($item->uid) ? (int) $item->uid : 0;
+            if ($uid <= 0) {
+                $uid = (int) imap_uid($this->connection, $i);
+            }
+
+            $subject_raw = isset($item->subject) ? (string) $item->subject : '(kein Betreff)';
+            $from_value = isset($item->from) ? $this->decode_header((string) $item->from) : '';
+            $to_value = isset($item->to) ? $this->decode_header((string) $item->to) : '';
+            $date_raw = isset($item->date) ? (string) $item->date : '';
+
+            if ($precise_addresses) {
+                $header = imap_headerinfo($this->connection, $i);
+                if ($header) {
+                    $from_parts = array();
+                    $to_parts = array();
+
+                    $formatted_from = $this->format_address($header->from ?? array());
+                    $formatted_to = $this->format_address($header->to ?? array());
+                    if ($formatted_from !== '') {
+                        $from_parts[] = $formatted_from;
+                    }
+                    if ($formatted_to !== '') {
+                        $to_parts[] = $formatted_to;
+                    }
+
+                    if (isset($header->fromaddress) && (string) $header->fromaddress !== '') {
+                        $from_parts[] = $this->decode_header((string) $header->fromaddress);
+                    }
+                    if (isset($header->toaddress) && (string) $header->toaddress !== '') {
+                        $to_parts[] = $this->decode_header((string) $header->toaddress);
+                    }
+
+                    $raw_header = @imap_fetchheader($this->connection, $i, FT_PREFETCHTEXT);
+                    if (is_string($raw_header) && $raw_header !== '') {
+                        $unfolded = preg_replace("/\r?\n[ \t]+/", ' ', $raw_header);
+                        if (preg_match('/^From:\s*(.+)$/im', $unfolded, $fm)) {
+                            $from_parts[] = $this->decode_header(trim((string) $fm[1]));
+                        }
+                        if (preg_match('/^To:\s*(.+)$/im', $unfolded, $tm)) {
+                            $to_parts[] = $this->decode_header(trim((string) $tm[1]));
+                        }
+                    }
+
+                    $from_parts = array_values(array_unique(array_filter(array_map('trim', $from_parts))));
+                    $to_parts = array_values(array_unique(array_filter(array_map('trim', $to_parts))));
+
+                    $from_value = implode(' | ', $from_parts);
+                    $to_value = implode(' | ', $to_parts);
+
+                    if (isset($header->subject) && (string) $header->subject !== '') {
+                        $subject_raw = (string) $header->subject;
+                    }
+                    if (isset($header->date) && (string) $header->date !== '') {
+                        $date_raw = (string) $header->date;
+                    }
+                }
+            }
+
             $emails[] = array(
                 'uid'     => $uid,
                 'seq'     => $i,
-                'subject' => $this->decode_header($header->subject ?? '(kein Betreff)'),
-                'from'    => $this->format_address($header->from ?? array()),
-                'date'    => isset($header->date) ? date('d.m.Y H:i', strtotime($header->date)) : '',
-                'seen'    => $seen,
+                'subject' => $this->decode_header($subject_raw),
+                'from'    => $from_value,
+                'to'      => $to_value,
+                'date'    => $date_raw !== '' ? date('d.m.Y H:i', strtotime($date_raw)) : '',
+                'seen'    => !empty($item->seen),
                 'has_attachments' => $has_attachments,
                 'total'   => $total,
             );
@@ -229,9 +497,53 @@ class AHX_WP_Mail_IMAP {
 
         $dest = mb_convert_encoding($to_folder, 'UTF7-IMAP', 'UTF-8');
         $ok   = imap_mail_move($this->connection, (string) $seq, $dest);
+
+        if (!$ok) {
+            $this->ensure_folder_path_exists($to_folder);
+            $ok = imap_mail_move($this->connection, (string) $seq, $dest);
+        }
+
         imap_expunge($this->connection);
 
         return $ok ? true : new WP_Error('imap_move_failed', 'Verschieben fehlgeschlagen.');
+    }
+
+    /**
+     * Stellt sicher, dass ein verschachtelter Zielordner (z. B. Archives/2026)
+     * serverseitig existiert.
+     *
+     * @param string $folder_path
+     * @return void
+     */
+    private function ensure_folder_path_exists($folder_path) {
+        if ($this->connection === false) {
+            return;
+        }
+
+        $folder_path = trim((string) $folder_path);
+        if ($folder_path === '') {
+            return;
+        }
+
+        $parts = array_values(array_filter(array_map('trim', explode('/', str_replace('\\\\', '/', $folder_path))), static function ($part) {
+            return $part !== '';
+        }));
+
+        if (empty($parts)) {
+            return;
+        }
+
+        $server = $this->build_mailbox_string('');
+        $current = '';
+
+        foreach ($parts as $part) {
+            $current = $current === '' ? $part : ($current . '/' . $part);
+            $mailbox = $server . mb_convert_encoding($current, 'UTF7-IMAP', 'UTF-8');
+            if (!@imap_createmailbox($this->connection, imap_utf7_encode($mailbox))) {
+                // Ordner existiert ggf. bereits oder darf nicht erstellt werden.
+                // In beiden Fällen still weitermachen und finalen move() erneut versuchen.
+            }
+        }
     }
 
     /**
@@ -532,7 +844,7 @@ class AHX_WP_Mail_IMAP {
             }
         }
 
-        return $html !== '' ? $html : nl2br(esc_html($plain));
+        return $html !== '' ? $html : $plain;
     }
 
     /**
@@ -673,6 +985,11 @@ class AHX_WP_Mail_IMAP {
             return $this->sanitize_html_body($decoded);
         }
 
+        // Einige Absender liefern in text/plain pseudo-HTML-Zeilenumbrueche.
+        // Diese sicher in echte Newlines umwandeln, bevor escaped wird.
+        $decoded = preg_replace('/<br\s*\/?\s*>/i', "\n", $decoded);
+        $decoded = preg_replace('/&lt;br\s*\/?\s*&gt;/i', "\n", $decoded);
+
         return nl2br(esc_html($decoded));
     }
 
@@ -713,17 +1030,13 @@ class AHX_WP_Mail_IMAP {
             }
         }
         
-        // If we found inline colors, use the most common one or white if available
+        // If we found inline colors, use the most common color.
+        // Do not force white just because a CTA/button uses white text.
         if (!empty($inline_text_colors)) {
             $value_counts = array_count_values($inline_text_colors);
             arsort($value_counts);
             $most_common = key($value_counts);
             $wrapper_styles['color'] = $most_common;
-            
-            // If white exists, prefer it
-            if (in_array('#ffffff', $inline_text_colors, true)) {
-                $wrapper_styles['color'] = '#ffffff';
-            }
         }
 
         // Style-Bloecke extrahieren, damit Layout-/Farbdefinitionen erhalten bleiben.
@@ -811,14 +1124,10 @@ class AHX_WP_Mail_IMAP {
 
         // 10a. EXTRACT ALL INLINE COLORS BEFORE wp_kses() strips them!
         $inline_text_colors = $this->extract_all_inline_text_colors($html);
-        if (!empty($inline_text_colors)) {
-            // Use the most common/first white color if found
-            $white_color = array_filter($inline_text_colors, function($c) {
-                return strtolower($c) === '#ffffff' || strtolower($c) === 'rgb(255,255,255)' || strtolower($c) === 'white';
-            });
-            if (!empty($white_color)) {
-                $wrapper_styles['color'] = '#ffffff';
-            }
+        if (!empty($inline_text_colors) && empty($wrapper_styles['color'])) {
+            $value_counts = array_count_values($inline_text_colors);
+            arsort($value_counts);
+            $wrapper_styles['color'] = key($value_counts);
         }
 
         // 9. wp_kses mit erweiterter Whitelist für E-Mail-Layout
@@ -1143,11 +1452,6 @@ class AHX_WP_Mail_IMAP {
         $styles_html = preg_replace('/-moz-binding\s*:/i', '', $styles_html);
         $styles_html = preg_replace('/behavior\s*:/i', '', $styles_html);
 
-        // Viele E-Mails stylen ueber body/html-Selektoren; im Plugin-Container existiert
-        // jedoch kein echtes body-Element. Selektoren auf den Wrapper umbiegen.
-        $styles_html = preg_replace('/\bhtml\b/i', '.ahx-mail-email-body', $styles_html);
-        $styles_html = preg_replace('/\bbody\b/i', '.ahx-mail-email-body', $styles_html);
-
         return $styles_html;
     }
 
@@ -1431,6 +1735,44 @@ class AHX_WP_Mail_IMAP {
         }
 
         return $this->decode_body_raw($raw, $encoding);
+    }
+
+    /**
+     * Liefert den Rohquelltext einer E-Mail (Header + Body) als RFC822-Text.
+     *
+     * @param string $folder
+     * @param int    $uid
+     * @return string|WP_Error
+     */
+    public function get_raw_email_source($folder, $uid) {
+        if ($this->connection === false) {
+            return new WP_Error('imap_not_connected', 'Keine IMAP-Verbindung.');
+        }
+
+        $mailbox = $this->build_mailbox_string($folder);
+        @imap_reopen($this->connection, $mailbox);
+
+        $seq = imap_msgno($this->connection, $uid);
+        if ($seq === 0) {
+            return new WP_Error('imap_not_found', 'Nachricht nicht gefunden.');
+        }
+
+        $header = @imap_fetchheader($this->connection, $seq, FT_PREFETCHTEXT);
+        if ($header === false) {
+            return new WP_Error('imap_fetch_failed', 'Nachrichtenkopf konnte nicht geladen werden.');
+        }
+
+        // Mit FT_PEEK, damit das reine Anzeigen des Quelltexts keine Statusaenderung ausloest.
+        $body = @imap_body($this->connection, $seq, FT_PEEK);
+        if ($body === false) {
+            $body = '';
+        }
+
+        if ($body !== '' && strpos($header, "\r\n\r\n") === false && strpos($header, "\n\n") === false) {
+            return $header . "\r\n" . $body;
+        }
+
+        return $header . $body;
     }
 
     /**

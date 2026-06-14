@@ -76,6 +76,7 @@ function ahx_wp_mail_shortcode($atts) {
                     &#128465; <?php esc_html_e('Papierkorb leeren', 'ahx_wp_mail'); ?>
                 </button>
                 <span class="ahx-mail-status" id="ahx-mail-status"></span>
+                <span class="ahx-mail-folder-stats" id="ahx-mail-folder-stats"></span>
             </div>
 
             <div id="ahx-mail-list-panel" class="ahx-mail-list-panel">
@@ -87,6 +88,9 @@ function ahx_wp_mail_shortcode($atts) {
                     </button>
                     <button class="ahx-mail-btn ahx-mail-btn--sm" id="ahx-mail-bulk-unread">
                         &#9675; <?php esc_html_e('Ungelesen', 'ahx_wp_mail'); ?>
+                    </button>
+                    <button class="ahx-mail-btn ahx-mail-btn--sm" id="ahx-mail-bulk-archive">
+                        &#128451; <?php esc_html_e('Archivieren', 'ahx_wp_mail'); ?>
                     </button>
                     <button class="ahx-mail-btn ahx-mail-btn--sm ahx-mail-btn--danger" id="ahx-mail-bulk-delete">
                         &#128465; <?php esc_html_e('Löschen', 'ahx_wp_mail'); ?>
@@ -134,6 +138,15 @@ function ahx_wp_mail_shortcode($atts) {
                     <button class="ahx-mail-btn ahx-mail-btn--sm" id="ahx-mail-detail-mark-unread">
                         &#9675; <?php esc_html_e('Als ungelesen markieren', 'ahx_wp_mail'); ?>
                     </button>
+                    <button class="ahx-mail-btn ahx-mail-btn--sm" id="ahx-mail-detail-archive">
+                        &#128451; <?php esc_html_e('Archivieren', 'ahx_wp_mail'); ?>
+                    </button>
+                    <button class="ahx-mail-btn ahx-mail-btn--sm" id="ahx-mail-detail-show-source">
+                        &lt;/&gt; <?php esc_html_e('Quelltext anzeigen', 'ahx_wp_mail'); ?>
+                    </button>
+                    <button class="ahx-mail-btn ahx-mail-btn--sm" id="ahx-mail-detail-download-source">
+                        &#128190; <?php esc_html_e('Quelltext herunterladen', 'ahx_wp_mail'); ?>
+                    </button>
                     <button class="ahx-mail-btn ahx-mail-btn--sm ahx-mail-btn--danger" id="ahx-mail-detail-delete">
                         &#128465; <?php esc_html_e('Löschen', 'ahx_wp_mail'); ?>
                     </button>
@@ -142,6 +155,21 @@ function ahx_wp_mail_shortcode($atts) {
                     </select>
                     <button class="ahx-mail-btn ahx-mail-btn--sm" id="ahx-mail-detail-move">
                         &#x2192; <?php esc_html_e('Verschieben', 'ahx_wp_mail'); ?>
+                    </button>
+                </div>
+
+                <div class="ahx-mail-sticky-actions" id="ahx-mail-sticky-actions" style="display:none;">
+                    <button class="ahx-mail-btn ahx-mail-btn--sm" id="ahx-mail-sticky-prev" type="button">
+                        &#x2190; <?php esc_html_e('Eine Nachricht vor', 'ahx_wp_mail'); ?>
+                    </button>
+                    <button class="ahx-mail-btn ahx-mail-btn--sm" id="ahx-mail-sticky-next" type="button">
+                        <?php esc_html_e('Eine Nachricht weiter', 'ahx_wp_mail'); ?> &#x2192;
+                    </button>
+                    <button class="ahx-mail-btn ahx-mail-btn--sm" id="ahx-mail-sticky-archive" type="button">
+                        &#128451; <?php esc_html_e('Archivieren', 'ahx_wp_mail'); ?>
+                    </button>
+                    <button class="ahx-mail-btn ahx-mail-btn--sm ahx-mail-btn--danger" id="ahx-mail-sticky-delete" type="button">
+                        &#128465; <?php esc_html_e('Löschen', 'ahx_wp_mail'); ?>
                     </button>
                 </div>
 
@@ -166,6 +194,76 @@ function ahx_wp_mail_shortcode($atts) {
                 <div class="ahx-mail-attachments" id="ahx-mail-attachments" style="display:none;">
                     <h3><?php esc_html_e('Anhänge', 'ahx_wp_mail'); ?></h3>
                     <ul id="ahx-mail-attachments-list" class="ahx-mail-attachments-list"></ul>
+                </div>
+
+                <div class="ahx-mail-rules" id="ahx-mail-rules">
+                    <h3><?php esc_html_e('Regeln', 'ahx_wp_mail'); ?></h3>
+
+                    <div class="ahx-mail-rules-builder">
+                        <div class="ahx-mail-rules-builder__row">
+                            <label for="ahx-mail-rule-account"><?php esc_html_e('Konto', 'ahx_wp_mail'); ?></label>
+                            <select id="ahx-mail-rule-account" class="ahx-mail-select">
+                                <?php foreach ($accounts as $acc): ?>
+                                    <option value="<?php echo esc_attr($acc['key']); ?>" <?php selected($active_account, $acc['key']); ?>>
+                                        <?php echo esc_html($acc['label']); ?>
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
+                        <div class="ahx-mail-rules-builder__row">
+                            <label for="ahx-mail-rule-folder"><?php esc_html_e('Ordner', 'ahx_wp_mail'); ?></label>
+                            <input type="text" id="ahx-mail-rule-folder" class="regular-text" value="INBOX" />
+                        </div>
+                        <div class="ahx-mail-rules-builder__row">
+                            <label for="ahx-mail-rule-from"><?php esc_html_e('Von enthält', 'ahx_wp_mail'); ?></label>
+                            <input type="text" id="ahx-mail-rule-from" class="regular-text" />
+                        </div>
+                        <div class="ahx-mail-rules-builder__row">
+                            <label for="ahx-mail-rule-to"><?php esc_html_e('An enthält', 'ahx_wp_mail'); ?></label>
+                            <input type="text" id="ahx-mail-rule-to" class="regular-text" />
+                        </div>
+                        <div class="ahx-mail-rules-builder__row">
+                            <label for="ahx-mail-rule-subject"><?php esc_html_e('Betreff enthält', 'ahx_wp_mail'); ?></label>
+                            <input type="text" id="ahx-mail-rule-subject" class="regular-text" />
+                        </div>
+                        <div class="ahx-mail-rules-builder__row">
+                            <label for="ahx-mail-rule-action"><?php esc_html_e('Aktion', 'ahx_wp_mail'); ?></label>
+                            <select id="ahx-mail-rule-action" class="ahx-mail-select">
+                                <option value="mark_read"><?php esc_html_e('Als gelesen markieren', 'ahx_wp_mail'); ?></option>
+                                <option value="mark_unread"><?php esc_html_e('Als ungelesen markieren', 'ahx_wp_mail'); ?></option>
+                                <option value="delete"><?php esc_html_e('Löschen', 'ahx_wp_mail'); ?></option>
+                                <option value="move"><?php esc_html_e('Verschieben', 'ahx_wp_mail'); ?></option>
+                                <option value="archive"><?php esc_html_e('Archivieren', 'ahx_wp_mail'); ?></option>
+                            </select>
+                        </div>
+                        <div class="ahx-mail-rules-builder__row" id="ahx-mail-rule-move-row" style="display:none;">
+                            <label for="ahx-mail-rule-move-to"><?php esc_html_e('Zielordner', 'ahx_wp_mail'); ?></label>
+                            <select id="ahx-mail-rule-move-to" class="ahx-mail-select">
+                                <option value=""><?php esc_html_e('Verschieben nach…', 'ahx_wp_mail'); ?></option>
+                            </select>
+                        </div>
+                        <div class="ahx-mail-rules-builder__actions">
+                            <button class="ahx-mail-btn ahx-mail-btn--sm" id="ahx-mail-rule-fill-from-mail" type="button">
+                                <?php esc_html_e('Aus aktueller Mail vorbelegen', 'ahx_wp_mail'); ?>
+                            </button>
+                            <button class="ahx-mail-btn ahx-mail-btn--sm" id="ahx-mail-rule-save" type="button">
+                                <?php esc_html_e('Regel speichern', 'ahx_wp_mail'); ?>
+                            </button>
+                        </div>
+                    </div>
+
+                    <ul id="ahx-mail-rules-list" class="ahx-mail-rules-list"></ul>
+                </div>
+
+                <div id="ahx-mail-source-modal" class="ahx-mail-source-modal" style="display:none;">
+                    <div class="ahx-mail-source-modal__backdrop" id="ahx-mail-source-close-backdrop"></div>
+                    <div class="ahx-mail-source-modal__dialog" role="dialog" aria-modal="true" aria-label="E-Mail Quelltext">
+                        <div class="ahx-mail-source-modal__header">
+                            <strong><?php esc_html_e('E-Mail Quelltext', 'ahx_wp_mail'); ?></strong>
+                            <button class="ahx-mail-btn ahx-mail-btn--sm" id="ahx-mail-source-close">&times;</button>
+                        </div>
+                        <pre id="ahx-mail-source-pre" class="ahx-mail-source-pre"></pre>
+                    </div>
                 </div>
             </div>
         </div>

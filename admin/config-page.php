@@ -112,6 +112,7 @@ function ahx_wp_mail_config_page() {
                         <p class="description"><?php esc_html_e('Steuert die Zuordnung von IMAP-Ordnernamen zu Hauptordnern. Beispiel: "Gesendete Objekte" kann der Gruppe "sent" zugeordnet werden.', 'ahx_wp_mail'); ?></p>
                     </td>
                 </tr>
+
             </table>
             <p class="submit">
                 <button type="submit" name="ahx_wp_mail_config_save" class="button button-primary">
