@@ -1861,8 +1861,12 @@
             return;
         }
 
+        loadRules();
+
         rulesReturnToDetail = $('#ahx-mail-detail-panel').is(':visible');
         if (prefillFromCurrentMail !== false && currentMail) {
+            // Quick-Regeln should always start as a new rule, not reuse a stale edit index.
+            resetRuleBuilder();
             showRuleBuilder();
             prefillRuleFromCurrentMail();
         } else if (editingRuleIndex < 0) {
@@ -2492,6 +2496,7 @@
     }
 
     function saveRuleFromBuilder() {
+        var previousRules = Array.isArray(userRules) ? userRules.slice() : [];
         var action = ($('#ahx-mail-rule-action').val() || '').trim();
         var selectedAccountKey = ($('#ahx-mail-rule-account').val() || state.accountKey || '').trim();
         var groups = getRuleConditionGroupsFromBuilder();
@@ -2527,18 +2532,31 @@
             rule.name = getRuleDisplayName(rule);
         }
 
-        if (editingRuleIndex >= 0) {
+        var canUpdateExisting = editingRuleIndex >= 0
+            && Array.isArray(userRules)
+            && !!userRules[editingRuleIndex]
+            && !!(rule.id || '').trim();
+
+        if (canUpdateExisting) {
             rule.index = editingRuleIndex;
+        } else {
+            rule.id = '';
         }
 
         $.post(ahxMail.ajaxUrl, {
             action: 'ahx_wp_mail_add_rule',
             nonce: ahxMail.nonce,
             rule: JSON.stringify(rule),
-            index: editingRuleIndex,
+            index: canUpdateExisting ? editingRuleIndex : -1,
         })
         .done(function (resp) {
             if (resp.success && resp.data && Array.isArray(resp.data.rules)) {
+                if (resp.data.rules.length === 0) {
+                    setStatus('Fehler: Regel konnte nicht gespeichert werden.');
+                    loadRules();
+                    return;
+                }
+
                 userRules = resp.data.rules;
                 renderRules();
                 resetRuleBuilder();
@@ -2548,8 +2566,17 @@
                 setStatus('Fehler: ' + (resp.data ? resp.data.message : 'Regel konnte nicht gespeichert werden.'));
             }
         })
-        .fail(function () {
-            setStatus('Verbindungsfehler beim Speichern der Regel.');
+        .fail(function (xhr) {
+            var serverMessage = '';
+            if (xhr && xhr.responseJSON && xhr.responseJSON.data && xhr.responseJSON.data.message) {
+                serverMessage = xhr.responseJSON.data.message;
+            }
+
+            if (serverMessage) {
+                setStatus('Fehler: ' + serverMessage);
+            } else {
+                setStatus('Verbindungsfehler beim Speichern der Regel.');
+            }
         });
     }
 

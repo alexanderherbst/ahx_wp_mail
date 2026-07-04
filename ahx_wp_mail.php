@@ -2,7 +2,7 @@
 /**
  * Plugin Name: AHX WP Mail
  * Description: IMAP-Postfach-Viewer im Frontend mit benutzerspezifischen Zugangsdaten.
- * Version: v0.4.2
+ * Version: v0.5.0
  * Author: Alexander Herbst
  * Author URI: https://familie-herbst.de/ahx
  * License: GPL2
@@ -14,7 +14,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('AHX_WP_MAIL_VERSION', 'v0.4.2');
+define('AHX_WP_MAIL_VERSION', 'v0.5.0');
 define('AHX_WP_MAIL_FILE', __FILE__);
 define('AHX_WP_MAIL_DIR', plugin_dir_path(__FILE__));
 define('AHX_WP_MAIL_URL', plugin_dir_url(__FILE__));
@@ -64,6 +64,33 @@ function ahx_wp_mail_get_rules() {
 }
 
 /**
+ * Dekodiert Regel-Meta robust aus JSON/String/serialisiertem Array.
+ *
+ * @param mixed $raw
+ * @return array
+ */
+function ahx_wp_mail_decode_rules_meta($raw) {
+    if (is_array($raw)) {
+        return $raw;
+    }
+
+    $raw_string = (string) $raw;
+    $decoded = json_decode($raw_string, true);
+    if (is_array($decoded)) {
+        return $decoded;
+    }
+
+    if ($raw_string !== '') {
+        $maybe_unserialized = maybe_unserialize($raw);
+        if (is_array($maybe_unserialized)) {
+            return $maybe_unserialized;
+        }
+    }
+
+    return array();
+}
+
+/**
  * Liefert benutzerspezifische Regeln.
  *
  * @param int $user_id
@@ -71,14 +98,21 @@ function ahx_wp_mail_get_rules() {
  */
 function ahx_wp_mail_get_user_rules($user_id) {
     $raw = get_user_meta((int) $user_id, 'ahx_wp_mail_rules', true);
-    $decoded = json_decode((string) $raw, true);
-    if (!is_array($decoded)) {
+    $decoded = ahx_wp_mail_decode_rules_meta($raw);
+
+    if (empty($decoded)) {
         return array();
     }
 
     // Legacy-Regeln ohne account_key auf das aktive Konto des Benutzers migrieren.
     $settings = AHX_WP_Mail_User_Settings::get((int) $user_id);
     $active_account_key = sanitize_key((string) ($settings['active_account_key'] ?? ''));
+    if ($active_account_key === '' && !empty($settings['accounts']) && is_array($settings['accounts'])) {
+        $first_account = reset($settings['accounts']);
+        if (is_array($first_account)) {
+            $active_account_key = sanitize_key((string) ($first_account['key'] ?? ''));
+        }
+    }
     $did_migrate = false;
 
     if ($active_account_key !== '') {
@@ -97,7 +131,7 @@ function ahx_wp_mail_get_user_rules($user_id) {
 
     $normalized = ahx_wp_mail_normalize_rules($decoded);
     if ($did_migrate) {
-        update_user_meta((int) $user_id, 'ahx_wp_mail_rules', wp_json_encode($normalized, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        ahx_wp_mail_save_user_rules((int) $user_id, $normalized);
     }
 
     return $normalized;
@@ -111,7 +145,15 @@ function ahx_wp_mail_get_user_rules($user_id) {
  */
 function ahx_wp_mail_save_user_rules($user_id, $rules) {
     $normalized = ahx_wp_mail_normalize_rules($rules);
-    update_user_meta((int) $user_id, 'ahx_wp_mail_rules', wp_json_encode($normalized, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+    update_user_meta((int) $user_id, 'ahx_wp_mail_rules', $normalized);
+
+    $verify_raw = get_user_meta((int) $user_id, 'ahx_wp_mail_rules', true);
+    $verify_decoded = ahx_wp_mail_decode_rules_meta($verify_raw);
+    if (!is_array($verify_decoded)) {
+        return new WP_Error('rules_verify_failed', 'Regeln konnten nicht verifiziert werden.');
+    }
+
+    return true;
 }
 
 /**
@@ -678,43 +720,89 @@ function ahx_wp_mail_ajax_add_rule() {
         wp_send_json_error(array('message' => 'Nicht eingeloggt.'), 403);
     }
 
+    $user_id = get_current_user_id();
+
     $raw_rule = isset($_POST['rule']) ? wp_unslash($_POST['rule']) : '';
     $decoded = json_decode((string) $raw_rule, true);
     if (!is_array($decoded)) {
         wp_send_json_error(array('message' => 'Ungültige Regel.'), 400);
     }
 
+    $incoming_account_key = sanitize_key((string) ($decoded['account_key'] ?? ''));
+    if ($incoming_account_key === '') {
+        $settings = AHX_WP_Mail_User_Settings::get($user_id);
+        $fallback_account_key = sanitize_key((string) ($settings['active_account_key'] ?? ''));
+
+        if ($fallback_account_key === '' && !empty($settings['accounts']) && is_array($settings['accounts'])) {
+            $first_account = reset($settings['accounts']);
+            if (is_array($first_account)) {
+                $fallback_account_key = sanitize_key((string) ($first_account['key'] ?? ''));
+            }
+        }
+
+        if ($fallback_account_key !== '') {
+            $decoded['account_key'] = $fallback_account_key;
+        }
+    }
+
     $index = isset($_POST['index']) ? (int) $_POST['index'] : -1;
     $normalized = ahx_wp_mail_normalize_rules(array($decoded));
     if (empty($normalized)) {
-        wp_send_json_error(array('message' => 'Regel unvollständig oder ungültig.'), 400);
+        wp_send_json_error(array('message' => 'Regel unvollständig oder ungültig (Konto/Bedingungen/Aktion prüfen).'), 400);
     }
 
-    $user_id = get_current_user_id();
     $rules = ahx_wp_mail_get_user_rules($user_id);
+    $is_update = false;
+    $merged_rule = $normalized[0];
+    $incoming_id = sanitize_text_field((string) ($merged_rule['id'] ?? ''));
 
-    if ($index >= 0) {
-        if (!isset($rules[$index])) {
-            wp_send_json_error(array('message' => 'Regel nicht gefunden.'), 404);
-        }
-
+    if ($index >= 0 && isset($rules[$index])) {
         $existing_rule = is_array($rules[$index]) ? $rules[$index] : array();
-        $merged_rule = array_merge($existing_rule, $normalized[0]);
-        if (empty($merged_rule['id'])) {
-            $merged_rule['id'] = !empty($existing_rule['id']) ? $existing_rule['id'] : ahx_wp_mail_generate_rule_id();
+        $existing_id = sanitize_text_field((string) ($existing_rule['id'] ?? ''));
+
+        if ($existing_id !== '' && $incoming_id !== '' && $existing_id === $incoming_id) {
+            $merged_rule = array_merge($existing_rule, $merged_rule);
+            if (empty($merged_rule['id'])) {
+                $merged_rule['id'] = $existing_id !== '' ? $existing_id : ahx_wp_mail_generate_rule_id();
+            }
+            $merged_rule['match_count'] = max(0, (int) ($existing_rule['match_count'] ?? 0));
+            $merged_rule['handled_count'] = max(0, (int) ($existing_rule['handled_count'] ?? 0));
+            $merged_rule['last_matched_at'] = (string) ($existing_rule['last_matched_at'] ?? '');
+            $merged_rule['last_handled_at'] = (string) ($existing_rule['last_handled_at'] ?? '');
+            $rules[$index] = $merged_rule;
+            $is_update = true;
+        } else {
+            $rules[] = $merged_rule;
         }
-        $merged_rule['match_count'] = max(0, (int) ($existing_rule['match_count'] ?? 0));
-        $merged_rule['handled_count'] = max(0, (int) ($existing_rule['handled_count'] ?? 0));
-        $merged_rule['last_matched_at'] = (string) ($existing_rule['last_matched_at'] ?? '');
-        $merged_rule['last_handled_at'] = (string) ($existing_rule['last_handled_at'] ?? '');
-        $rules[$index] = $merged_rule;
     } else {
-        $rules[] = $normalized[0];
+        $rules[] = $merged_rule;
     }
 
-    ahx_wp_mail_save_user_rules($user_id, $rules);
+    $save_result = ahx_wp_mail_save_user_rules($user_id, $rules);
+    if (is_wp_error($save_result)) {
+        wp_send_json_error(array('message' => $save_result->get_error_message()), 500);
+    }
 
-    wp_send_json_success(array('rules' => ahx_wp_mail_get_user_rules($user_id)));
+    $saved_rules = ahx_wp_mail_get_user_rules($user_id);
+    $saved_id = sanitize_text_field((string) ($merged_rule['id'] ?? ''));
+    $found_saved_id = false;
+    if ($saved_id !== '') {
+        foreach ($saved_rules as $saved_rule) {
+            if (!is_array($saved_rule)) {
+                continue;
+            }
+            if (sanitize_text_field((string) ($saved_rule['id'] ?? '')) === $saved_id) {
+                $found_saved_id = true;
+                break;
+            }
+        }
+    }
+
+    if (!$found_saved_id) {
+        wp_send_json_error(array('message' => 'Regel konnte nicht gespeichert werden.'), 500);
+    }
+
+    wp_send_json_success(array('rules' => $saved_rules));
 }
 add_action('wp_ajax_ahx_wp_mail_add_rule', 'ahx_wp_mail_ajax_add_rule');
 
