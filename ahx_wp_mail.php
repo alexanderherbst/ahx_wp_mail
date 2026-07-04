@@ -2,7 +2,7 @@
 /**
  * Plugin Name: AHX WP Mail
  * Description: IMAP-Postfach-Viewer im Frontend mit benutzerspezifischen Zugangsdaten.
- * Version: v0.4.0
+ * Version: v0.4.2
  * Author: Alexander Herbst
  * Author URI: https://familie-herbst.de/ahx
  * License: GPL2
@@ -14,7 +14,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('AHX_WP_MAIL_VERSION', 'v0.4.0');
+define('AHX_WP_MAIL_VERSION', 'v0.4.2');
 define('AHX_WP_MAIL_FILE', __FILE__);
 define('AHX_WP_MAIL_DIR', plugin_dir_path(__FILE__));
 define('AHX_WP_MAIL_URL', plugin_dir_url(__FILE__));

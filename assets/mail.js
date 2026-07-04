@@ -28,6 +28,7 @@
     var favoriteFolders = [];
     var recentFolders = [];
     var expandedFolderNodes = {};
+    var stickyActionsInBody = false;
 
     var CACHE_LIMITS = {
         detailItems: 100,
@@ -286,6 +287,15 @@
         });
 
         $('#ahx-mail-detail-panel').on('scroll', function () {
+            updateStickyActionsVisibility();
+        });
+
+        $(window).on('scroll', function () {
+            updateStickyActionsVisibility();
+        });
+
+        $(window).on('resize orientationchange', function () {
+            ensureStickyActionsPlacement();
             updateStickyActionsVisibility();
         });
 
@@ -1596,11 +1606,94 @@
         loadEmail($target.data('uid'), $target.data('folder'));
     }
 
+    function isMobileActionsMode() {
+        var appWidth = $('#ahx-mail-app').outerWidth() || 0;
+
+        if (appWidth > 0 && appWidth <= 1024) {
+            return true;
+        }
+
+        if (window.matchMedia && window.matchMedia('(max-width: 1024px)').matches) {
+            return true;
+        }
+
+        if (window.matchMedia && window.matchMedia('(hover: none) and (pointer: coarse)').matches) {
+            return true;
+        }
+
+        return false;
+    }
+
+    function ensureStickyActionsPlacement() {
+        var $sticky = $('#ahx-mail-sticky-actions');
+        if (!$sticky.length) {
+            return;
+        }
+
+        if (isMobileActionsMode()) {
+            $sticky.addClass('ahx-mail-sticky-actions--mobile');
+            if (!stickyActionsInBody) {
+                $('body').append($sticky);
+                stickyActionsInBody = true;
+            }
+            return;
+        }
+
+        $sticky.removeClass('ahx-mail-sticky-actions--mobile ahx-mail-sticky-actions--visible');
+        if (stickyActionsInBody) {
+            $sticky.insertAfter('.ahx-mail-detail-actions');
+            stickyActionsInBody = false;
+        }
+    }
+
+    function showStickyActions() {
+        var $sticky = $('#ahx-mail-sticky-actions');
+        if (!$sticky.length) {
+            return;
+        }
+
+        if ($sticky.hasClass('ahx-mail-sticky-actions--mobile')) {
+            $sticky.addClass('ahx-mail-sticky-actions--visible');
+            return;
+        }
+
+        $sticky.show();
+    }
+
     function updateStickyActionsVisibility() {
+        ensureStickyActionsPlacement();
+
         var $panel = $('#ahx-mail-detail-panel');
         var $actions = $('.ahx-mail-detail-actions');
         var $sticky = $('#ahx-mail-sticky-actions');
         if (!$panel.length || !$actions.length || !$sticky.length || !$panel.is(':visible')) {
+            hideStickyActions();
+            return;
+        }
+
+        if (isMobileActionsMode()) {
+            if (!currentMail) {
+                hideStickyActions();
+                return;
+            }
+
+            var actionsEl = $actions.get(0);
+            if (!actionsEl) {
+                hideStickyActions();
+                return;
+            }
+
+            // Mobile layouts may scroll either inside the panel or on the page.
+            // Use viewport position of the native action row as the source of truth.
+            var actionsRect = actionsEl.getBoundingClientRect();
+            var shouldShowSticky = actionsRect.bottom < 8;
+
+            if (shouldShowSticky) {
+                showStickyActions();
+                updateStickyNavigationState();
+            } else {
+                hideStickyActions();
+            }
             return;
         }
 
@@ -1612,13 +1705,23 @@
         if (isVisible) {
             hideStickyActions();
         } else {
-            $sticky.show();
+            showStickyActions();
             updateStickyNavigationState();
         }
     }
 
     function hideStickyActions() {
-        $('#ahx-mail-sticky-actions').hide();
+        var $sticky = $('#ahx-mail-sticky-actions');
+        if (!$sticky.length) {
+            return;
+        }
+
+        if ($sticky.hasClass('ahx-mail-sticky-actions--mobile')) {
+            $sticky.removeClass('ahx-mail-sticky-actions--visible');
+            return;
+        }
+
+        $sticky.hide();
     }
 
     function renderMailBody(bodyHtml) {
@@ -1745,6 +1848,7 @@
             rulesReturnToDetail = false;
         }
         hideStickyActions();
+        ensureStickyActionsPlacement();
         $('#ahx-mail-detail-panel').hide();
         $('#ahx-mail-rules-panel').hide();
         $('#ahx-mail-list-panel').show();

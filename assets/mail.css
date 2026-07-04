@@ -447,6 +447,26 @@
     cursor: default;
 }
 
+.ahx-mail-sticky-actions.ahx-mail-sticky-actions--mobile {
+    position: fixed !important;
+    left: 8px !important;
+    right: 8px !important;
+    top: calc(8px + env(safe-area-inset-top, 0px)) !important;
+    bottom: auto !important;
+    margin: 0 !important;
+    width: auto !important;
+    justify-content: flex-start;
+    border-radius: 10px;
+    border-bottom: 0;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12);
+    z-index: 99999 !important;
+    display: none !important;
+}
+
+.ahx-mail-sticky-actions.ahx-mail-sticky-actions--mobile.ahx-mail-sticky-actions--visible {
+    display: flex !important;
+}
+
 /* Danger-Button */
 .ahx-mail-btn--danger {
     border-color: #e53e3e;
@@ -1007,4 +1027,160 @@
     list-style: none;
     margin: 0;
     padding: 0;
+}
+
+@media (max-width: 1024px) {
+    .ahx-mail-app {
+        flex-direction: column;
+        height: auto;
+        min-height: 0;
+    }
+
+    .ahx-mail-sidebar {
+        width: 100%;
+        border-right: 0;
+        border-bottom: 1px solid #ddd;
+        max-height: 44vh;
+    }
+
+    .ahx-mail-sidebar__scroll {
+        max-height: 36vh;
+    }
+
+    .ahx-mail-main {
+        min-height: 56vh;
+    }
+
+    .ahx-mail-toolbar {
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+
+    .ahx-mail-folder-stats {
+        margin-left: 0;
+        width: 100%;
+    }
+
+    .ahx-mail-list-head,
+    .ahx-mail-list {
+        min-width: 680px;
+    }
+
+    .ahx-mail-list-scroll {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    .ahx-mail-rules-panel {
+        margin: 10px;
+    }
+}
+
+@media (max-width: 1024px), (hover: none) and (pointer: coarse) {
+    .ahx-mail-app {
+        border-radius: 0;
+        border-left: 0;
+        border-right: 0;
+        font-size: 13px;
+    }
+
+    .ahx-mail-sidebar {
+        padding: 8px 0;
+        max-height: 48vh;
+    }
+
+    .ahx-mail-sidebar__title {
+        padding: 0 10px 6px;
+    }
+
+    .ahx-mail-sidebar__search {
+        padding: 0 8px 8px;
+    }
+
+    .ahx-mail-folder,
+    .ahx-mail-nav-group__header,
+    .ahx-mail-nav-subitem {
+        padding-left: 10px;
+        padding-right: 10px;
+    }
+
+    .ahx-mail-toolbar,
+    .ahx-mail-bulk-toolbar,
+    .ahx-mail-pagination {
+        padding-left: 10px;
+        padding-right: 10px;
+    }
+
+    .ahx-mail-btn,
+    .ahx-mail-select {
+        font-size: 12px;
+    }
+
+    .ahx-mail-status,
+    .ahx-mail-stale-indicator,
+    .ahx-mail-folder-stats {
+        font-size: 11px;
+    }
+
+    .ahx-mail-list thead th,
+    .ahx-mail-list tbody td {
+        padding-left: 10px;
+        padding-right: 10px;
+    }
+
+    .ahx-mail-list-head th:nth-child(2),
+    .ahx-mail-list tbody td:nth-child(2) {
+        width: 38%;
+    }
+
+    .ahx-mail-list-head th:nth-child(4),
+    .ahx-mail-list tbody td:nth-child(4) {
+        width: 128px;
+    }
+
+    .ahx-mail-detail-panel {
+        padding: calc(72px + env(safe-area-inset-top, 0px)) 10px 12px;
+    }
+
+    .ahx-mail-detail-header h2 {
+        font-size: 16px;
+        line-height: 1.35;
+    }
+
+    .ahx-mail-sticky-actions {
+        justify-content: flex-start;
+    }
+
+    .ahx-mail-rules-panel {
+        margin: 8px;
+        padding: 10px;
+    }
+
+    .ahx-mail-rules-panel__header,
+    .ahx-mail-rule-item,
+    .ahx-mail-rule-group__header {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .ahx-mail-rule-item__actions {
+        width: 100%;
+        justify-content: flex-start;
+    }
+
+    .ahx-mail-rules-builder__row {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 6px;
+    }
+
+    .ahx-mail-rules-builder__row label {
+        min-width: 0;
+    }
+
+    .ahx-mail-source-modal__dialog {
+        width: 100vw;
+        height: 100vh;
+        border-radius: 0;
+    }
 }
