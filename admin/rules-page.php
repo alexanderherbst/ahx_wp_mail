@@ -81,19 +81,24 @@ function ahx_wp_mail_rules_page() {
                     <td>
                         <textarea id="ahx_wp_mail_rules" name="ahx_wp_mail_rules" rows="12" class="large-text code"><?php echo esc_textarea($rules_pretty); ?></textarea>
                         <p class="description">
-                            <?php esc_html_e('Regelform: enabled, account_key, folder, from_contains, to_contains, subject_contains, action(mark_read|mark_unread|delete|move|archive), move_to_folder.', 'ahx_wp_mail'); ?>
+                                                        <?php esc_html_e('Regelform: id, name, enabled, account_key, folder, match_any[] mit from_contains/to_contains/subject_contains, action(mark_read|mark_unread|delete|move|archive), move_to_folder, match_count, handled_count.', 'ahx_wp_mail'); ?>
                         </p>
                         <p class="description"><strong>Beispiel:</strong></p>
                         <pre class="code" style="padding:8px;background:#f6f7f7;">[
   {
+        "id": "rule-1",
+        "name": "Newsletter verschieben",
     "enabled": true,
     "account_key": "alexander_familie_herbst_net",
     "folder": "INBOX",
-    "from_contains": "newsletter@",
-    "to_contains": "",
-    "subject_contains": "",
+        "match_any": [
+            { "from_contains": "newsletter@", "to_contains": "", "subject_contains": "" },
+            { "from_contains": "promo@", "to_contains": "", "subject_contains": "" }
+        ],
     "action": "move",
-    "move_to_folder": "Archive"
+        "move_to_folder": "Archive",
+        "match_count": 0,
+        "handled_count": 0
   }
 ]</pre>
                     </td>

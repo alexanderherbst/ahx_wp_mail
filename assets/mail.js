@@ -22,6 +22,12 @@
     var attachmentFlagsOrder = [];
     var detailCacheByKey = {};
     var detailCacheOrder = [];
+    var rulesReturnToDetail = false;
+    var editingRuleIndex = -1;
+    var folderSearchTerm = '';
+    var favoriteFolders = [];
+    var recentFolders = [];
+    var expandedFolderNodes = {};
 
     var CACHE_LIMITS = {
         detailItems: 100,
@@ -113,6 +119,7 @@
         if (trashData && typeof trashData === 'object') {
             accountTrashFolders = trashData;
         }
+        loadFolderSidebarPreferences();
 
         loadEmails();
         loadRules();
@@ -123,27 +130,79 @@
         });
 
         $('#ahx-mail-back').on('click', function () {
-            showListPanel();
+            showListPanel(true);
         });
 
-        $(document).on('click', '.ahx-mail-folder', function () {
-            $('.ahx-mail-folder').removeClass('ahx-mail-folder--active');
-            $(this).addClass('ahx-mail-folder--active');
+        $(document).on('click', '#ahx-mail-nav-rules', function (e) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            showRulesPanel(false);
+        });
+
+        $(document).on('click', '#ahx-mail-nav-rules-overview', function (e) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            showRulesPanel(false);
+        });
+
+        $(document).on('click', '#ahx-mail-nav-rules-quick', function (e) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            showRuleBuilder();
+            showRulesPanel(true);
+        });
+
+        $(document).on('click', '.ahx-mail-folder-row', function () {
+            var folderName = $(this).data('folder');
+            if (typeof folderName === 'undefined' || folderName === null || folderName === '') {
+                return;
+            }
             showListPanel(true);
-            state.folder = $(this).data('folder');
+            state.folder = folderName;
             state.page   = 1;
+            rememberRecentFolder(folderName);
             loadEmails();
             updateFolderToolbar();
+        });
+
+        $(document).on('click', '.ahx-mail-folder-toggle', function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            var nodeKey = ($(this).data('nodeKey') || '').toString();
+            if (!nodeKey) {
+                return;
+            }
+            toggleFolderNode(nodeKey);
+            renderFolders(folderList, folderStats);
+        });
+
+        $(document).on('click', '.ahx-mail-folder-favorite', function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            var folderName = ($(this).data('folder') || '').toString();
+            if (!folderName) {
+                return;
+            }
+            toggleFavoriteFolder(folderName);
+            renderFolders(folderList, folderStats);
         });
 
         $(document).on('change', '#ahx-mail-account-switch', function () {
             state.accountKey = $(this).val() || '';
             state.folder = 'INBOX';
             state.page = 1;
+            folderSearchTerm = '';
+            $('#ahx-mail-folder-search').val('');
+            loadFolderSidebarPreferences();
             syncRuleAccountSelection(true);
             showListPanel(true);
             loadEmails();
             updateFolderToolbar();
+        });
+
+        $(document).on('input', '#ahx-mail-folder-search', function () {
+            folderSearchTerm = ($(this).val() || '').toString().trim().toLowerCase();
+            renderFolders(folderList, folderStats);
         });
 
         // Alle auswählen
@@ -263,6 +322,15 @@
             $('#ahx-mail-source-modal').hide();
         });
 
+        $(document).on('click', '#ahx-mail-detail-rules-toggle', function () {
+            showRuleBuilder();
+            showRulesPanel(true);
+        });
+
+        $(document).on('click', '#ahx-mail-rules-panel-close', function () {
+            hideRulesPanel();
+        });
+
         $(document).on('change', '#ahx-mail-rule-action', function () {
             toggleRuleMoveRow();
         });
@@ -276,11 +344,35 @@
         });
 
         $(document).on('click', '#ahx-mail-rule-fill-from-mail', function () {
+            showRuleBuilder();
             prefillRuleFromCurrentMail();
+        });
+
+        $(document).on('click', '#ahx-mail-rule-add-group', function () {
+            addRuleConditionGroup();
+        });
+
+        $(document).on('click', '.ahx-mail-rule-group-remove', function () {
+            $(this).closest('.ahx-mail-rule-group').remove();
+        });
+
+        $(document).on('click', '#ahx-mail-rule-cancel', function () {
+            resetRuleBuilder();
+        });
+
+        $(document).on('click', '#ahx-mail-rule-new', function () {
+            resetRuleBuilder();
+            showRuleBuilder();
         });
 
         $(document).on('click', '#ahx-mail-rule-save', function () {
             saveRuleFromBuilder();
+        });
+
+        $(document).on('click', '.ahx-mail-rule-edit', function () {
+            var index = parseInt($(this).data('index'), 10);
+            if (isNaN(index)) { return; }
+            editRule(index);
         });
 
         $(document).on('click', '.ahx-mail-rule-delete', function () {
@@ -289,6 +381,7 @@
             deleteRule(index);
         });
 
+        resetRuleBuilder();
         syncRuleAccountSelection(false);
     });
 
@@ -688,6 +781,225 @@
 
         return 'Archives/' + year;
     }
+
+    function getFolderStorageKey(suffix) {
+        return 'ahx_wp_mail:' + suffix + ':' + (state.accountKey || 'default');
+    }
+
+    function readFolderStorageArray(key) {
+        try {
+            var raw = window.localStorage.getItem(key);
+            var decoded = JSON.parse(raw || '[]');
+            return Array.isArray(decoded) ? decoded : [];
+        } catch (error) {
+            return [];
+        }
+    }
+
+    function readFolderStorageObject(key) {
+        try {
+            var raw = window.localStorage.getItem(key);
+            var decoded = JSON.parse(raw || '{}');
+            return decoded && typeof decoded === 'object' ? decoded : {};
+        } catch (error) {
+            return {};
+        }
+    }
+
+    function persistFolderSidebarPreferences() {
+        try {
+            window.localStorage.setItem(getFolderStorageKey('favorite-folders'), JSON.stringify(favoriteFolders));
+            window.localStorage.setItem(getFolderStorageKey('recent-folders'), JSON.stringify(recentFolders));
+            window.localStorage.setItem(getFolderStorageKey('expanded-folders'), JSON.stringify(expandedFolderNodes));
+        } catch (error) {
+            // Ignore storage errors.
+        }
+    }
+
+    function loadFolderSidebarPreferences() {
+        favoriteFolders = readFolderStorageArray(getFolderStorageKey('favorite-folders'));
+        recentFolders = readFolderStorageArray(getFolderStorageKey('recent-folders'));
+        expandedFolderNodes = readFolderStorageObject(getFolderStorageKey('expanded-folders'));
+    }
+
+    function rememberRecentFolder(folderName) {
+        recentFolders = recentFolders.filter(function (folder) {
+            return folder !== folderName;
+        });
+        recentFolders.unshift(folderName);
+        recentFolders = recentFolders.slice(0, 8);
+        persistFolderSidebarPreferences();
+    }
+
+    function toggleFavoriteFolder(folderName) {
+        if (favoriteFolders.indexOf(folderName) !== -1) {
+            favoriteFolders = favoriteFolders.filter(function (folder) {
+                return folder !== folderName;
+            });
+        } else {
+            favoriteFolders.unshift(folderName);
+        }
+        persistFolderSidebarPreferences();
+    }
+
+    function toggleFolderNode(nodeKey) {
+        expandedFolderNodes[nodeKey] = !expandedFolderNodes[nodeKey];
+        persistFolderSidebarPreferences();
+    }
+
+    function isFolderFavorite(folderName) {
+        return favoriteFolders.indexOf(folderName) !== -1;
+    }
+
+    function getFolderSegments(folder) {
+        if (folder.indexOf('/') !== -1) {
+            return folder.split('/');
+        }
+        if (folder.indexOf('.') !== -1) {
+            return folder.split('.');
+        }
+        return [folder];
+    }
+
+    function getFolderDelimiter(folder) {
+        if (folder.indexOf('/') !== -1) {
+            return '/';
+        }
+        if (folder.indexOf('.') !== -1) {
+            return '.';
+        }
+        return '/';
+    }
+
+    function getFolderLabel(folderOrSegment, fullPath) {
+        var target = typeof fullPath === 'string' ? fullPath : folderOrSegment;
+        if (/^INBOX$/i.test(target)) {
+            return 'Posteingang';
+        }
+        return folderOrSegment;
+    }
+
+    function getFolderLeafLabel(folder) {
+        var segments = getFolderSegments(folder).filter(function (segment) {
+            return !!segment;
+        });
+        var leaf = segments.length ? segments[segments.length - 1] : folder;
+        return getFolderLabel(leaf, folder);
+    }
+
+    function getFolderAliasGroupKey(folder) {
+        if (/^INBOX$/i.test(folder)) {
+            return 'inbox';
+        }
+
+        var aliasKeys = Object.keys(folderAliases || {});
+        for (var i = 0; i < aliasKeys.length; i += 1) {
+            var aliasKey = aliasKeys[i];
+            var aliases = folderAliases[aliasKey];
+            if (Array.isArray(aliases) && matchesFolderAlias(folder, aliases)) {
+                return String(aliasKey).toLowerCase();
+            }
+        }
+
+        return '';
+    }
+
+    function dedupeImportantFolders(folders) {
+        var seen = {};
+        return (folders || []).filter(function (folder) {
+            var aliasKey = getFolderAliasGroupKey(folder);
+            var dedupeKey = aliasKey ? ('alias:' + aliasKey) : ('folder:' + String(folder).toLowerCase());
+
+            if (seen[dedupeKey]) {
+                return false;
+            }
+
+            seen[dedupeKey] = true;
+            return true;
+        });
+    }
+
+    function collectFoldersByNames(names, availableFolders) {
+        var lookup = {};
+        (availableFolders || []).forEach(function (folder) {
+            lookup[folder] = true;
+        });
+
+        return (names || []).filter(function (folder) {
+            return !!lookup[folder];
+        });
+    }
+
+    function buildFolderTree(folders) {
+        var root = { key: '__root__', children: [] };
+        var nodeMap = { '__root__': root };
+
+        folders.forEach(function (folder) {
+            var segments = getFolderSegments(folder).filter(function (segment) { return !!segment; });
+            var delimiter = getFolderDelimiter(folder);
+            var currentKey = '';
+            var parent = root;
+
+            segments.forEach(function (segment, index) {
+                currentKey = currentKey ? (currentKey + delimiter + segment) : segment;
+                if (!nodeMap[currentKey]) {
+                    nodeMap[currentKey] = {
+                        key: currentKey,
+                        folder: currentKey,
+                        label: getFolderLabel(segment, currentKey),
+                        children: [],
+                        exists: false,
+                        depth: index,
+                    };
+                    parent.children.push(nodeMap[currentKey]);
+                }
+
+                parent = nodeMap[currentKey];
+                if (index === segments.length - 1) {
+                    parent.exists = true;
+                    parent.folder = folder;
+                }
+            });
+        });
+
+        sortFolderTreeChildren(root.children);
+        return root;
+    }
+
+    function sortFolderTreeChildren(children) {
+        children.sort(function (left, right) {
+            var leftFolder = left.folder || left.key || '';
+            var rightFolder = right.folder || right.key || '';
+            return getFolderPriority(leftFolder) - getFolderPriority(rightFolder)
+                || left.label.localeCompare(right.label, undefined, { sensitivity: 'base' });
+        });
+
+        children.forEach(function (child) {
+            if (child.children && child.children.length) {
+                sortFolderTreeChildren(child.children);
+            }
+        });
+    }
+
+    function filterFolderTreeNodes(nodes, searchTerm) {
+        if (!searchTerm) {
+            return nodes;
+        }
+
+        var filtered = [];
+        nodes.forEach(function (node) {
+            var selfMatch = (node.folder || '').toLowerCase().indexOf(searchTerm) !== -1
+                || (node.label || '').toLowerCase().indexOf(searchTerm) !== -1;
+            var filteredChildren = filterFolderTreeNodes(node.children || [], searchTerm);
+            if (selfMatch || filteredChildren.length) {
+                filtered.push($.extend({}, node, {
+                    children: filteredChildren,
+                }));
+            }
+        });
+
+        return filtered;
+    }
     // -----------------------------------------------------------------------
     // Ordner rendern
     // -----------------------------------------------------------------------
@@ -746,6 +1058,139 @@
         });
     }
 
+    function renderFolderSection($list, title, items) {
+        if (!Array.isArray(items) || items.length === 0) {
+            return;
+        }
+
+        var $section = $('<li>').addClass('ahx-mail-folder-section');
+        $section.append($('<div>').addClass('ahx-mail-folder-section__title').text(title));
+        var $sectionList = $('<ul>').addClass('ahx-mail-folder-section__list');
+        items.forEach(function (item) {
+            $sectionList.append(item);
+        });
+        $section.append($sectionList);
+        $list.append($section);
+    }
+
+    function getFolderCountText(folderStat) {
+        var unread = parseInt(folderStat && folderStat.unread ? folderStat.unread : 0, 10);
+        var total = parseInt(folderStat && folderStat.total ? folderStat.total : 0, 10);
+
+        if (isNaN(unread) || unread < 0) {
+            unread = 0;
+        }
+        if (isNaN(total) || total < unread) {
+            total = unread;
+        }
+
+        return unread + ' / ' + total;
+    }
+
+    function createFolderRow(folder, stats, options) {
+        var folderStat = stats[folder] || {};
+        var active = folder === state.folder;
+        var favorite = isFolderFavorite(folder);
+        var useLeafLabel = !!(options && options.leafLabel);
+        var folderLabel = useLeafLabel ? getFolderLeafLabel(folder) : getFolderLabel(folder, folder);
+        var $item = $('<li>').addClass('ahx-mail-folder-item');
+        var $row = $('<div>')
+            .addClass('ahx-mail-folder ahx-mail-folder-row' + (active ? ' ahx-mail-folder--active' : ''))
+            .attr('data-folder', folder);
+
+        if (options && options.spacer) {
+            $row.append($('<span>').addClass('ahx-mail-folder-toggle-spacer'));
+        }
+
+        $row.append($('<span>').addClass('ahx-mail-folder-label').text(folderLabel));
+        if (active) {
+            $row.append(
+                $('<button>')
+                    .addClass('ahx-mail-folder-favorite' + (favorite ? ' ahx-mail-folder-favorite--active' : ''))
+                    .attr('type', 'button')
+                    .attr('data-folder', folder)
+                    .attr('title', favorite ? 'Favorit entfernen' : 'Als Favorit markieren')
+                    .text(favorite ? '★' : '☆')
+            );
+        }
+        $row.append(
+            $('<span>')
+                .addClass('ahx-mail-folder-count' + (active ? ' ahx-mail-folder-count--active' : ''))
+                .attr('title', 'Ungelesene / gesamte Nachrichten')
+                .text(getFolderCountText(folderStat))
+        );
+
+        $item.append($row);
+        return $item;
+    }
+
+    function createFolderTreeItem(node, stats, searchTerm) {
+        var folder = node.folder || node.key;
+        var hasChildren = Array.isArray(node.children) && node.children.length > 0;
+        var active = node.exists && folder === state.folder;
+        var expanded = searchTerm ? true : (node.depth === 0 ? expandedFolderNodes[node.key] !== false : !!expandedFolderNodes[node.key]);
+        var favorite = node.exists && isFolderFavorite(folder);
+        var $item = $('<li>').addClass('ahx-mail-folder-tree__item ahx-mail-folder-tree__item--depth-' + Math.min(5, node.depth || 0));
+        var $row = $('<div>').addClass('ahx-mail-folder ahx-mail-folder-row ahx-mail-folder-tree__row' + (active ? ' ahx-mail-folder--active' : '') + (!node.exists ? ' ahx-mail-folder-row--branch' : ''));
+
+        if (node.exists) {
+            $row.attr('data-folder', folder);
+        }
+
+        if (hasChildren) {
+            $row.append(
+                $('<button>')
+                    .addClass('ahx-mail-folder-toggle')
+                    .attr('type', 'button')
+                    .attr('data-node-key', node.key)
+                    .attr('title', expanded ? 'Zweig einklappen' : 'Zweig ausklappen')
+                    .text(expanded ? '▾' : '▸')
+            );
+        } else {
+            $row.append($('<span>').addClass('ahx-mail-folder-toggle-spacer'));
+        }
+
+        $row.append($('<span>').addClass('ahx-mail-folder-label').text(node.label));
+
+        if (node.exists) {
+            var folderStat = stats[folder] || {};
+            if (active) {
+                $row.append(
+                    $('<button>')
+                        .addClass('ahx-mail-folder-favorite' + (favorite ? ' ahx-mail-folder-favorite--active' : ''))
+                        .attr('type', 'button')
+                        .attr('data-folder', folder)
+                        .attr('title', favorite ? 'Favorit entfernen' : 'Als Favorit markieren')
+                        .text(favorite ? '★' : '☆')
+                );
+            }
+            $row.append(
+                $('<span>')
+                    .addClass('ahx-mail-folder-count' + (active ? ' ahx-mail-folder-count--active' : ''))
+                    .attr('title', 'Ungelesene / gesamte Nachrichten')
+                    .text(getFolderCountText(folderStat))
+            );
+        } else {
+            $row.append(
+                $('<span>')
+                    .addClass('ahx-mail-folder-tree__branch-meta')
+                    .text((node.children || []).length)
+            );
+        }
+
+        $item.append($row);
+
+        if (hasChildren && expanded) {
+            var $children = $('<ul>').addClass('ahx-mail-folder-tree');
+            node.children.forEach(function (child) {
+                $children.append(createFolderTreeItem(child, stats, searchTerm));
+            });
+            $item.append($children);
+        }
+
+        return $item;
+    }
+
     function renderFolders(folders, stats) {
         if (!Array.isArray(folders) || folders.length === 0) {
             return;
@@ -757,35 +1202,56 @@
         $list.empty();
         stats = stats && typeof stats === 'object' ? stats : {};
 
-        folders.forEach(function (folder) {
-            var label = folder === 'INBOX'
-                ? 'Posteingang'
-                : folder;
-            var active = folder === state.folder ? ' ahx-mail-folder--active' : '';
-            var folderStat = stats[folder] || {};
-            var unread = parseInt(folderStat.unread || 0, 10);
-
-            var $item = $('<li>')
-                .addClass('ahx-mail-folder' + active)
-                .attr('data-folder', folder);
-
-            $item.append(
-                $('<span>')
-                    .addClass('ahx-mail-folder-label')
-                    .text(label)
-            );
-
-            $item.append(
-                $('<span>')
-                    .addClass('ahx-mail-folder-count' + (active ? ' ahx-mail-folder-count--active' : ''))
-                    .attr('title', 'Ungelesene Nachrichten')
-                    .text(isNaN(unread) ? '0' : String(unread))
-            );
-
-            $list.append(
-                $item
-            );
+        var searchTerm = folderSearchTerm;
+        var favorites = collectFoldersByNames(favoriteFolders, folders).filter(function (folder) {
+            return !searchTerm || folder.toLowerCase().indexOf(searchTerm) !== -1 || getFolderLabel(folder, folder).toLowerCase().indexOf(searchTerm) !== -1;
         });
+        var important = folders.filter(function (folder) {
+            return getFolderPriority(folder) < 100 && favorites.indexOf(folder) === -1;
+        }).filter(function (folder) {
+            return !searchTerm || folder.toLowerCase().indexOf(searchTerm) !== -1 || getFolderLabel(folder, folder).toLowerCase().indexOf(searchTerm) !== -1;
+        });
+        important = dedupeImportantFolders(important).slice(0, 6);
+        var recent = collectFoldersByNames(recentFolders, folders).filter(function (folder) {
+            return favorites.indexOf(folder) === -1 && important.indexOf(folder) === -1;
+        }).filter(function (folder) {
+            return !searchTerm || folder.toLowerCase().indexOf(searchTerm) !== -1 || getFolderLabel(folder, folder).toLowerCase().indexOf(searchTerm) !== -1;
+        });
+
+        renderFolderSection($list, 'Favoriten', favorites.map(function (folder) {
+            return createFolderRow(folder, stats, { spacer: true, leafLabel: true });
+        }));
+
+        if (!searchTerm) {
+            renderFolderSection($list, 'Wichtig', important.map(function (folder) {
+                return createFolderRow(folder, stats, { spacer: true });
+            }));
+
+            renderFolderSection($list, 'Zuletzt verwendet', recent.map(function (folder) {
+                return createFolderRow(folder, stats, { spacer: true, leafLabel: true });
+            }));
+        }
+
+        var treeRoot = buildFolderTree(folders);
+        var treeNodes = filterFolderTreeNodes(treeRoot.children || [], searchTerm);
+        if (treeNodes.length) {
+            var $treeSection = $('<li>').addClass('ahx-mail-folder-section ahx-mail-folder-section--tree');
+            $treeSection.append($('<div>').addClass('ahx-mail-folder-section__title').text(searchTerm ? 'Suchtreffer' : 'Alle Ordner'));
+            var $treeList = $('<ul>').addClass('ahx-mail-folder-tree');
+            treeNodes.forEach(function (node) {
+                $treeList.append(createFolderTreeItem(node, stats, searchTerm));
+            });
+            $treeSection.append($treeList);
+            $list.append($treeSection);
+        }
+
+        if (!$list.children().length) {
+            $list.append(
+                $('<li>')
+                    .addClass('ahx-mail-folder-empty')
+                    .text('Keine Ordner zur aktuellen Suche gefunden.')
+            );
+        }
 
         // Ordner für Verschieben-Dropdowns merken und befüllen
         folderList = folders;
@@ -998,6 +1464,7 @@
 
     function showDetailPanel(mail) {
         currentMail = mail;
+        rulesReturnToDetail = false;
 
         $('#ahx-mail-detail-subject').text(mail.subject || '(kein Betreff)');
         $('#ahx-mail-detail-from').text(mail.from || '');
@@ -1026,7 +1493,9 @@
         }
 
         $('#ahx-mail-list-panel').hide();
+        $('#ahx-mail-rules-panel').hide();
         $('#ahx-mail-detail-panel').show();
+        setSidebarView('list');
 
         // Beim Öffnen immer an den Anfang der Nachricht springen.
         scrollToMailTop();
@@ -1267,13 +1736,73 @@
     }
 
     function showListPanel(resetDetailState) {
+        if (typeof resetDetailState === 'undefined') {
+            resetDetailState = true;
+        }
         if (resetDetailState) {
             currentMail = null;
             state.openFolder = '';
+            rulesReturnToDetail = false;
         }
         hideStickyActions();
         $('#ahx-mail-detail-panel').hide();
+        $('#ahx-mail-rules-panel').hide();
         $('#ahx-mail-list-panel').show();
+        setSidebarView('list');
+    }
+
+    function showRulesPanel(prefillFromCurrentMail) {
+        var $panel = $('#ahx-mail-rules-panel');
+        if (!$panel.length) {
+            return;
+        }
+
+        rulesReturnToDetail = $('#ahx-mail-detail-panel').is(':visible');
+        if (prefillFromCurrentMail !== false && currentMail) {
+            showRuleBuilder();
+            prefillRuleFromCurrentMail();
+        } else if (editingRuleIndex < 0) {
+            hideRuleBuilder();
+        }
+
+        hideStickyActions();
+        $('#ahx-mail-list-panel').hide();
+        $('#ahx-mail-detail-panel').hide();
+        $panel.show();
+        setSidebarView('rules');
+        scrollToRulesTop();
+    }
+
+    function hideRulesPanel() {
+        $('#ahx-mail-rules-panel').hide();
+        if (rulesReturnToDetail && currentMail) {
+            showDetailPanel(currentMail);
+            return;
+        }
+        showListPanel(true);
+    }
+
+    function setSidebarView(view) {
+        var isRules = view === 'rules';
+        $('#ahx-mail-nav-rules').toggleClass('ahx-mail-nav-group__header--active', isRules);
+        $('#ahx-mail-nav-rules-overview').toggleClass('ahx-mail-nav-subitem--active', isRules);
+        $('#ahx-mail-nav-rules-quick')
+            .toggleClass('ahx-mail-nav-subitem--active', isRules && !!currentMail)
+            .prop('disabled', !currentMail);
+    }
+
+    function scrollToRulesTop() {
+        var $panel = $('#ahx-mail-rules-panel');
+        var $app = $('#ahx-mail-app');
+
+        if ($panel.length) {
+            $panel.scrollTop(0);
+        }
+
+        if ($app.length) {
+            $('html, body').scrollTop($app.offset().top || 0);
+            $app[0].scrollIntoView({ block: 'start', inline: 'nearest' });
+        }
     }
 
     function scrollToMailTop() {
@@ -1531,6 +2060,211 @@
         }
     }
 
+    function getRuleConditionGroupsFromBuilder() {
+        var groups = [];
+
+        groups.push({
+            from_contains: ($('#ahx-mail-rule-from').val() || '').trim(),
+            to_contains: ($('#ahx-mail-rule-to').val() || '').trim(),
+            subject_contains: ($('#ahx-mail-rule-subject').val() || '').trim(),
+        });
+
+        $('#ahx-mail-rule-groups .ahx-mail-rule-group').each(function () {
+            var $group = $(this);
+            groups.push({
+                from_contains: ($group.find('.ahx-mail-rule-group__from').val() || '').trim(),
+                to_contains: ($group.find('.ahx-mail-rule-group__to').val() || '').trim(),
+                subject_contains: ($group.find('.ahx-mail-rule-group__subject').val() || '').trim(),
+            });
+        });
+
+        return groups.filter(function (group) {
+            return group.from_contains || group.to_contains || group.subject_contains;
+        });
+    }
+
+    function createRuleConditionGroupElement(group, groupNumber) {
+        var $group = $('<div>').addClass('ahx-mail-rule-group');
+        var title = 'ODER-Bedingung ' + groupNumber;
+
+        $group.append(
+            $('<div>').addClass('ahx-mail-rule-group__header')
+                .append($('<span>').addClass('ahx-mail-rule-group__title').text(title))
+                .append(
+                    $('<button>')
+                        .addClass('ahx-mail-btn ahx-mail-btn--sm ahx-mail-rule-group-remove')
+                        .attr('type', 'button')
+                        .text('Entfernen')
+                )
+        );
+
+        $group.append(
+            $('<div>').addClass('ahx-mail-rules-builder__row')
+                .append($('<label>').text('Von enthält'))
+                .append($('<input>').addClass('regular-text ahx-mail-rule-group__from').val((group && group.from_contains) || ''))
+        );
+        $group.append(
+            $('<div>').addClass('ahx-mail-rules-builder__row')
+                .append($('<label>').text('An enthält'))
+                .append($('<input>').addClass('regular-text ahx-mail-rule-group__to').val((group && group.to_contains) || ''))
+        );
+        $group.append(
+            $('<div>').addClass('ahx-mail-rules-builder__row')
+                .append($('<label>').text('Betreff enthält'))
+                .append($('<input>').addClass('regular-text ahx-mail-rule-group__subject').val((group && group.subject_contains) || ''))
+        );
+
+        return $group;
+    }
+
+    function addRuleConditionGroup(group) {
+        showRuleBuilder();
+        var $container = $('#ahx-mail-rule-groups');
+        if (!$container.length) {
+            return;
+        }
+
+        var groupCount = $container.children('.ahx-mail-rule-group').length + 2;
+        $container.append(createRuleConditionGroupElement(group || {}, groupCount));
+    }
+
+    function renderRuleConditionGroups(rule) {
+        var $container = $('#ahx-mail-rule-groups');
+        if (!$container.length) {
+            return;
+        }
+
+        $container.empty();
+        var groups = Array.isArray(rule && rule.match_any) ? rule.match_any : [];
+        if (groups.length > 1) {
+            groups.slice(1).forEach(function (group, index) {
+                $container.append(createRuleConditionGroupElement(group || {}, index + 2));
+            });
+        }
+    }
+
+    function resetRuleBuilder() {
+        editingRuleIndex = -1;
+        $('#ahx-mail-rule-name').val('');
+        $('#ahx-mail-rule-folder').val('INBOX');
+        $('#ahx-mail-rule-from').val('');
+        $('#ahx-mail-rule-to').val('');
+        $('#ahx-mail-rule-subject').val('');
+        $('#ahx-mail-rule-action').val('mark_read');
+        $('#ahx-mail-rule-move-to').val('');
+        $('#ahx-mail-rule-groups').empty();
+        $('#ahx-mail-rule-save').text('Regel speichern');
+        $('#ahx-mail-rule-cancel').hide();
+        toggleRuleMoveRow();
+        hideRuleBuilder();
+    }
+
+    function showRuleBuilder() {
+        var $builder = $('#ahx-mail-rules-builder');
+        if ($builder.length) {
+            $builder.show();
+        }
+    }
+
+    function hideRuleBuilder() {
+        var $builder = $('#ahx-mail-rules-builder');
+        if ($builder.length && editingRuleIndex < 0) {
+            $builder.hide();
+        }
+    }
+
+    function editRule(index) {
+        if (!Array.isArray(userRules) || !userRules[index]) {
+            return;
+        }
+
+        var rule = userRules[index] || {};
+        editingRuleIndex = index;
+        $('#ahx-mail-rule-name').val(rule.name || getRuleDisplayName(rule));
+        $('#ahx-mail-rule-folder').val(rule.folder || 'INBOX');
+        $('#ahx-mail-rule-from').val(rule.from_contains || '');
+        $('#ahx-mail-rule-to').val(rule.to_contains || '');
+        $('#ahx-mail-rule-subject').val(rule.subject_contains || '');
+        $('#ahx-mail-rule-action').val(rule.action || 'mark_read');
+        $('#ahx-mail-rule-move-to').val(rule.move_to_folder || '');
+        renderRuleConditionGroups(rule);
+        $('#ahx-mail-rule-save').text('Regel aktualisieren');
+        $('#ahx-mail-rule-cancel').show();
+        toggleRuleMoveRow();
+        showRuleBuilder();
+        setStatus('Regel #' + (index + 1) + ' wird bearbeitet.');
+    }
+
+    function getRuleDisplayName(rule) {
+        if (!rule) {
+            return 'Unbenannte Regel';
+        }
+
+        if (rule.name && String(rule.name).trim()) {
+            return String(rule.name).trim();
+        }
+
+        var groups = Array.isArray(rule.match_any) && rule.match_any.length ? rule.match_any : [rule];
+        var parts = [];
+        groups.forEach(function (group) {
+            var labels = [];
+            if (group && group.from_contains) { labels.push('Von enthält "' + group.from_contains + '"'); }
+            if (group && group.to_contains) { labels.push('An enthält "' + group.to_contains + '"'); }
+            if (group && group.subject_contains) { labels.push('Betreff enthält "' + group.subject_contains + '"'); }
+            if (labels.length) {
+                parts.push(labels.join(' · '));
+            }
+        });
+
+        if (!parts.length) {
+            parts.push('Unbenannte Regel');
+        }
+
+        return parts.join(' ODER ');
+    }
+
+    function getRuleActionLabel(action, moveToFolder) {
+        if (action === 'mark_read') {
+            return 'gelesen';
+        }
+        if (action === 'mark_unread') {
+            return 'ungelesen';
+        }
+        if (action === 'delete') {
+            return 'gelöscht';
+        }
+        if (action === 'archive') {
+            return 'archiviert';
+        }
+        if (action === 'move') {
+            return 'verschoben' + (moveToFolder ? ' nach ' + moveToFolder : '');
+        }
+
+        return action || '';
+    }
+
+    function getRuleSummary(rule) {
+        var groups = Array.isArray(rule.match_any) && rule.match_any.length ? rule.match_any : [rule];
+        var parts = [];
+
+        groups.forEach(function (group) {
+            if (!group) { return; }
+            var labels = [];
+            if (group.from_contains) { labels.push('Von: ' + group.from_contains); }
+            if (group.to_contains) { labels.push('An: ' + group.to_contains); }
+            if (group.subject_contains) { labels.push('Betreff: ' + group.subject_contains); }
+            if (labels.length) {
+                parts.push(labels.join(', '));
+            }
+        });
+
+        if (!parts.length) {
+            parts.push('Ohne Bedingungen');
+        }
+
+        return parts.join(' ODER ') + ' → ' + getRuleActionLabel(rule.action, rule.move_to_folder);
+    }
+
     function loadRules() {
         $.post(ahxMail.ajaxUrl, {
             action: 'ahx_wp_mail_get_rules',
@@ -1546,6 +2280,7 @@
 
     function renderRules() {
         var $list = $('#ahx-mail-rules-list');
+        updateRulesCountBadge();
         if (!$list.length) {
             return;
         }
@@ -1557,40 +2292,42 @@
         }
 
         userRules.forEach(function (rule, index) {
-            var text = '[' + (rule.folder || 'INBOX') + '] ';
-            var accountLabel = getRuleAccountLabel(rule.account_key || '');
-            if (accountLabel) {
-                text = '[Konto: ' + accountLabel + '] ' + text;
-            }
-            if (rule.from_contains) {
-                text += 'Von enthält "' + rule.from_contains + '" ';
-            }
-            if (rule.to_contains) {
-                text += 'An enthält "' + rule.to_contains + '" ';
-            }
-            if (rule.subject_contains) {
-                text += 'Betreff enthält "' + rule.subject_contains + '" ';
-            }
-            var actionLabel = rule.action;
-            if (rule.action === 'archive') {
-                actionLabel = 'archivieren (Archives/<Jahr>)';
-            }
-            text += '→ ' + actionLabel;
-            if (rule.action === 'move' && rule.move_to_folder) {
-                text += ' (' + rule.move_to_folder + ')';
-            }
-
             var $item = $('<li>').addClass('ahx-mail-rule-item');
-            $item.append($('<span>').addClass('ahx-mail-rule-text').text(text));
+            var $body = $('<div>').addClass('ahx-mail-rule-item__body');
+            $body.append($('<div>').addClass('ahx-mail-rule-item__title').text(rule.name || getRuleDisplayName(rule)));
+            $body.append($('<div>').addClass('ahx-mail-rule-item__summary').text(getRuleSummary(rule)));
+            $body.append($('<div>').addClass('ahx-mail-rule-item__meta').text('Treffer: ' + (parseInt(rule.match_count || 0, 10) || 0) + ' · Ausgeführt: ' + (parseInt(rule.handled_count || 0, 10) || 0)));
+            $item.append($body);
             $item.append(
-                $('<button>')
-                    .addClass('ahx-mail-btn ahx-mail-btn--sm ahx-mail-rule-delete')
-                    .attr('type', 'button')
-                    .attr('data-index', index)
-                    .text('Löschen')
+                $('<div>').addClass('ahx-mail-rule-item__actions')
+                    .append(
+                        $('<button>')
+                            .addClass('ahx-mail-btn ahx-mail-btn--sm ahx-mail-rule-edit')
+                            .attr('type', 'button')
+                            .attr('data-index', index)
+                            .text('Bearbeiten')
+                    )
+                    .append(
+                        $('<button>')
+                            .addClass('ahx-mail-btn ahx-mail-btn--sm ahx-mail-rule-delete')
+                            .attr('type', 'button')
+                            .attr('data-index', index)
+                            .text('Löschen')
+                    )
             );
             $list.append($item);
         });
+    }
+
+    function updateRulesCountBadge() {
+        var $badge = $('#ahx-mail-rules-count-badge');
+        if (!$badge.length) {
+            return;
+        }
+
+        var count = Array.isArray(userRules) ? userRules.length : 0;
+        $badge.text(String(count));
+        $badge.toggleClass('ahx-mail-nav-group__badge--empty', count === 0);
     }
 
     function prefillRuleFromCurrentMail() {
@@ -1606,6 +2343,15 @@
         // E-Mail-Adresse aus "Name <mail@domain>" extrahieren
         var match = from.match(/<([^>]+)>/);
         var fromValue = match ? match[1] : from;
+
+        if (!$('#ahx-mail-rule-name').val()) {
+            $('#ahx-mail-rule-name').val(getRuleDisplayName({
+                from_contains: fromValue,
+                to_contains: to,
+                subject_contains: subject,
+                action: $('#ahx-mail-rule-action').val() || 'mark_read'
+            }));
+        }
 
         $('#ahx-mail-rule-folder').val(state.openFolder || state.folder || 'INBOX');
         syncRuleAccountSelection(true);
@@ -1644,8 +2390,11 @@
     function saveRuleFromBuilder() {
         var action = ($('#ahx-mail-rule-action').val() || '').trim();
         var selectedAccountKey = ($('#ahx-mail-rule-account').val() || state.accountKey || '').trim();
+        var groups = getRuleConditionGroupsFromBuilder();
         var rule = {
+            id: editingRuleIndex >= 0 && userRules[editingRuleIndex] ? (userRules[editingRuleIndex].id || '') : '',
             enabled: true,
+            name: ($('#ahx-mail-rule-name').val() || '').trim(),
             account_key: selectedAccountKey,
             folder: ($('#ahx-mail-rule-folder').val() || 'INBOX').trim(),
             from_contains: ($('#ahx-mail-rule-from').val() || '').trim(),
@@ -1653,6 +2402,7 @@
             subject_contains: ($('#ahx-mail-rule-subject').val() || '').trim(),
             action: action,
             move_to_folder: ($('#ahx-mail-rule-move-to').val() || '').trim(),
+            match_any: groups,
         };
 
         if (!rule.account_key) {
@@ -1660,8 +2410,8 @@
             return;
         }
 
-        if (!rule.from_contains && !rule.to_contains && !rule.subject_contains) {
-            setStatus('Bitte mindestens eines der Filterkriterien ausfüllen (Von, An oder Betreff).');
+        if (!groups.length) {
+            setStatus('Bitte mindestens ein Filterkriterium ausfüllen (Von, An oder Betreff).');
             return;
         }
         if (rule.action === 'move' && !rule.move_to_folder) {
@@ -1669,15 +2419,26 @@
             return;
         }
 
+        if (!rule.name) {
+            rule.name = getRuleDisplayName(rule);
+        }
+
+        if (editingRuleIndex >= 0) {
+            rule.index = editingRuleIndex;
+        }
+
         $.post(ahxMail.ajaxUrl, {
             action: 'ahx_wp_mail_add_rule',
             nonce: ahxMail.nonce,
             rule: JSON.stringify(rule),
+            index: editingRuleIndex,
         })
         .done(function (resp) {
             if (resp.success && resp.data && Array.isArray(resp.data.rules)) {
                 userRules = resp.data.rules;
                 renderRules();
+                resetRuleBuilder();
+                hideRuleBuilder();
                 setStatus('Regel gespeichert.');
             } else {
                 setStatus('Fehler: ' + (resp.data ? resp.data.message : 'Regel konnte nicht gespeichert werden.'));
@@ -1698,6 +2459,9 @@
             if (resp.success && resp.data && Array.isArray(resp.data.rules)) {
                 userRules = resp.data.rules;
                 renderRules();
+                if (editingRuleIndex >= 0) {
+                    resetRuleBuilder();
+                }
                 setStatus('Regel gelöscht.');
             } else {
                 setStatus('Fehler: ' + (resp.data ? resp.data.message : 'Regel konnte nicht gelöscht werden.'));
