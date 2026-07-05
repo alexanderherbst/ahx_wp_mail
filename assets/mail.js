@@ -10,6 +10,7 @@
         pendingReloadSilent: true,
         accountKey: '',
         debugColorTrace: false,
+        ruleProcessedOnly: false,
     };
 
     var folderList = [];
@@ -29,6 +30,7 @@
     var recentFolders = [];
     var expandedFolderNodes = {};
     var stickyActionsInBody = false;
+    var currentPageEmails = [];
 
     var CACHE_LIMITS = {
         detailItems: 100,
@@ -128,6 +130,11 @@
         $('#ahx-mail-refresh').on('click', function () {
             state.page = 1;
             loadEmails();
+        });
+
+        $(document).on('change', '#ahx-mail-filter-rule-processed', function () {
+            state.ruleProcessedOnly = $(this).prop('checked');
+            renderCurrentEmailView();
         });
 
         $('#ahx-mail-back').on('click', function () {
@@ -470,9 +477,9 @@
         }
 
         folderStats = (data.folder_stats && typeof data.folder_stats === 'object') ? data.folder_stats : {};
+        currentPageEmails = Array.isArray(data.emails) ? data.emails : [];
         renderFolders(data.folders, folderStats);
-        renderEmailList(data.emails);
-        renderPagination(data.emails, data.page || state.page);
+        renderCurrentEmailView(data.page || state.page);
         renderCurrentFolderStats(data.current_folder_stats, data.emails);
 
         if (data.attachment_flags && typeof data.attachment_flags === 'object') {
@@ -484,6 +491,33 @@
 
         fetchDeferredFolderStats(data.deferred_stats_folders || []);
         fetchAttachmentFlagsForVisibleRows(data.emails, fromCache);
+    }
+
+    function getVisibleEmailsFromCurrentPage() {
+        if (!Array.isArray(currentPageEmails)) {
+            return [];
+        }
+
+        if (!state.ruleProcessedOnly) {
+            return currentPageEmails;
+        }
+
+        return currentPageEmails.filter(function (mail) {
+            return !!(mail && mail.flagged);
+        });
+    }
+
+    function renderCurrentEmailView(currentPage) {
+        var allEmails = Array.isArray(currentPageEmails) ? currentPageEmails : [];
+        var visibleEmails = getVisibleEmailsFromCurrentPage();
+        var emptyMessage = 'Keine E-Mails in diesem Ordner.';
+
+        if (state.ruleProcessedOnly && allEmails.length > 0 && visibleEmails.length === 0) {
+            emptyMessage = 'Keine regelbearbeiteten E-Mails auf dieser Seite.';
+        }
+
+        renderEmailList(visibleEmails, emptyMessage);
+        renderPagination(allEmails, currentPage || state.page);
     }
 
     function fetchDeferredFolderStats(folders) {
@@ -740,6 +774,18 @@
             if (oldestKey && detailCacheByKey.hasOwnProperty(oldestKey)) {
                 delete detailCacheByKey[oldestKey];
             }
+        }
+    }
+
+    function evictCachedDetail(cacheKey) {
+        if (!cacheKey || !detailCacheByKey.hasOwnProperty(cacheKey)) {
+            return;
+        }
+
+        delete detailCacheByKey[cacheKey];
+        var idx = detailCacheOrder.indexOf(cacheKey);
+        if (idx !== -1) {
+            detailCacheOrder.splice(idx, 1);
         }
     }
 
@@ -1299,14 +1345,14 @@
     // -----------------------------------------------------------------------
     // E-Mail-Liste rendern
     // -----------------------------------------------------------------------
-    function renderEmailList(emails) {
+    function renderEmailList(emails, emptyMessage) {
         var $tbody = $('#ahx-mail-tbody');
         $tbody.empty();
         $('#ahx-mail-check-all').prop('checked', false);
         updateBulkToolbar();
 
         if (!Array.isArray(emails) || emails.length === 0) {
-            $tbody.append('<tr><td colspan="4">Keine E-Mails in diesem Ordner.</td></tr>');
+            $tbody.append('<tr><td colspan="4">' + (emptyMessage || 'Keine E-Mails in diesem Ordner.') + '</td></tr>');
             return;
         }
 
@@ -1321,6 +1367,14 @@
             $row.append($('<td>').addClass('ahx-mail-col-check').append($check).on('click', function (e) { e.stopPropagation(); }));
             $row.append($('<td>').text(mail.from || '(unbekannt)'));
             var $subjectCell = $('<td>').addClass('ahx-mail-col-subject');
+            if (mail.flagged) {
+                $subjectCell.append(
+                    $('<span>')
+                        .addClass('ahx-mail-rule-indicator')
+                        .attr('title', 'Von einer Regel bearbeitet')
+                        .text('Regel')
+                );
+            }
             if (mail.has_attachments) {
                 $subjectCell.append(
                     $('<span>')
@@ -1402,11 +1456,17 @@
     // -----------------------------------------------------------------------
     // Einzelne E-Mail laden
     // -----------------------------------------------------------------------
-    function loadEmail(uid, folder) {
+    function loadEmail(uid, folder, forceReload, forceAllowImages) {
+        forceReload = !!forceReload;
+        forceAllowImages = !!forceAllowImages;
         setStatus('Lädt Nachricht…');
 
         var cacheKey = [state.accountKey || '', folder || state.folder || '', String(uid || '')].join('::');
-        var cachedDetail = getCachedDetail(cacheKey);
+        if (forceReload) {
+            evictCachedDetail(cacheKey);
+        }
+
+        var cachedDetail = forceReload ? null : getCachedDetail(cacheKey);
         if (cachedDetail) {
             showDetailPanel(cachedDetail);
             setStatus('');
@@ -1420,6 +1480,7 @@
             folder: folder,
             uid:    uid,
             debug:  state.debugColorTrace ? 1 : 0,
+            force_allow_images: forceAllowImages ? 1 : 0,
         })
         .done(function (resp) {
             if (resp.success) {
@@ -1817,6 +1878,14 @@
     });
 
     function allowImages(type, value) {
+        if (!currentMail || !currentMail.uid) {
+            setStatus('Keine geöffnete Nachricht zum Neuladen.');
+            return;
+        }
+
+        var reloadUid = currentMail.uid;
+        var reloadFolder = state.openFolder || state.folder;
+
         setStatus('Speichere…');
         $.post(ahxMail.ajaxUrl, {
             action: 'ahx_wp_mail_allow_images',
@@ -1827,8 +1896,10 @@
         })
         .done(function (resp) {
             if (resp.success) {
+                revealBlockedImagesInCurrentView();
+                setStatus('Freigabe gespeichert. Lade neu…');
                 // E-Mail neu laden – jetzt mit Bildern
-                loadEmail(currentMail.uid, state.openFolder || state.folder);
+                loadEmail(reloadUid, reloadFolder, true, true);
             } else {
                 setStatus('Fehler beim Speichern.');
             }
@@ -1836,6 +1907,21 @@
         .fail(function () {
             setStatus('Verbindungsfehler.');
         });
+    }
+
+    function revealBlockedImagesInCurrentView() {
+        var iframe = $('#ahx-mail-detail-body .ahx-mail-detail-iframe').get(0);
+        if (!iframe || !iframe.contentWindow || !iframe.contentWindow.document) {
+            return;
+        }
+
+        var $body = $(iframe.contentWindow.document.body);
+        $body.find('[data-ahx-src]').each(function () {
+            $(this).attr('src', $(this).attr('data-ahx-src')).removeAttr('data-ahx-src');
+        });
+
+        syncMailIframeHeight(iframe);
+        $('#ahx-mail-image-bar').hide();
     }
 
     function showListPanel(resetDetailState) {

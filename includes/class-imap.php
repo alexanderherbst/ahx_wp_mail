@@ -413,6 +413,7 @@ class AHX_WP_Mail_IMAP {
                 'to'      => $to_value,
                 'date'    => $date_raw !== '' ? date('d.m.Y H:i', strtotime($date_raw)) : '',
                 'seen'    => !empty($item->seen),
+                'flagged' => !empty($item->flagged),
                 'has_attachments' => $has_attachments,
                 'total'   => $total,
             );
@@ -477,6 +478,20 @@ class AHX_WP_Mail_IMAP {
      */
     public function mark_unread($folder, $uid) {
         return $this->set_flag($folder, $uid, '\\Seen', false);
+    }
+
+    /**
+     * Markiert eine Nachricht als von Regeln bearbeitet.
+     */
+    public function mark_rule_processed($folder, $uid) {
+        return $this->set_flag($folder, $uid, '\\Flagged', true);
+    }
+
+    /**
+     * Entfernt die Markierung "von Regeln bearbeitet".
+     */
+    public function unmark_rule_processed($folder, $uid) {
+        return $this->set_flag($folder, $uid, '\\Flagged', false);
     }
 
     /**

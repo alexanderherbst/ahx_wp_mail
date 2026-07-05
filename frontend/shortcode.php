@@ -103,6 +103,10 @@ function ahx_wp_mail_shortcode($atts) {
                 <button class="ahx-mail-btn" id="ahx-mail-refresh">
                     &#x21BB; <?php esc_html_e('Aktualisieren', 'ahx_wp_mail'); ?>
                 </button>
+                <label class="ahx-mail-toolbar__filter" for="ahx-mail-filter-rule-processed">
+                    <input type="checkbox" id="ahx-mail-filter-rule-processed" />
+                    <span><?php esc_html_e('Nur Regelbearbeitet', 'ahx_wp_mail'); ?></span>
+                </label>
                 <button class="ahx-mail-btn ahx-mail-btn--danger" id="ahx-mail-empty-trash" style="display:none;">
                     &#128465; <?php esc_html_e('Papierkorb leeren', 'ahx_wp_mail'); ?>
                 </button>

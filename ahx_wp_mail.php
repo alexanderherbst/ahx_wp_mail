@@ -2,7 +2,7 @@
 /**
  * Plugin Name: AHX WP Mail
  * Description: IMAP-Postfach-Viewer im Frontend mit benutzerspezifischen Zugangsdaten.
- * Version: v0.5.0
+ * Version: v0.5.1
  * Author: Alexander Herbst
  * Author URI: https://familie-herbst.de/ahx
  * License: GPL2
@@ -14,7 +14,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('AHX_WP_MAIL_VERSION', 'v0.5.0');
+define('AHX_WP_MAIL_VERSION', 'v0.5.1');
 define('AHX_WP_MAIL_FILE', __FILE__);
 define('AHX_WP_MAIL_DIR', plugin_dir_path(__FILE__));
 define('AHX_WP_MAIL_URL', plugin_dir_url(__FILE__));
@@ -557,6 +557,7 @@ function ahx_wp_mail_run_rules($trigger = 'manual') {
                 }
 
                 $report['accounts_checked']++;
+                $account_changed = false;
 
                 foreach ($rules as $rule_index => $rule) {
                     if (empty($rule['enabled'])) {
@@ -615,6 +616,12 @@ function ahx_wp_mail_run_rules($trigger = 'manual') {
                             $rules_changed = true;
 
                             $action = $rule['action'];
+                            $tag_set_before_action = false;
+                            if (in_array($action, array('move', 'archive', 'delete'), true)) {
+                                $tag_result = $imap->mark_rule_processed($folder, $uid);
+                                $tag_set_before_action = !is_wp_error($tag_result);
+                            }
+
                             $result = true;
                             if ($action === 'mark_read') {
                                 $result = $imap->mark_read($folder, $uid);
@@ -650,12 +657,19 @@ function ahx_wp_mail_run_rules($trigger = 'manual') {
                             }
 
                             if (is_wp_error($result)) {
+                                if ($tag_set_before_action) {
+                                    $imap->unmark_rule_processed($folder, $uid);
+                                }
                                 $report['errors'][] = sprintf('User %d / Konto %s / UID %d: %s', $user_id, $account_key, $uid, $result->get_error_message());
                             } else {
+                                if (!$tag_set_before_action) {
+                                    $imap->mark_rule_processed($folder, $uid);
+                                }
                                 $report['actions_applied']++;
                                 $rules[$rule_index]['handled_count'] = max(0, (int) ($rules[$rule_index]['handled_count'] ?? 0)) + 1;
                                 $rules[$rule_index]['last_handled_at'] = gmdate('c');
                                 $rules_changed = true;
+                                $account_changed = true;
                             }
                         }
 
@@ -665,6 +679,10 @@ function ahx_wp_mail_run_rules($trigger = 'manual') {
 
                         $page++;
                     }
+                }
+
+                if ($account_changed) {
+                    ahx_wp_mail_bump_cache_version($user_id, (string) $account_key);
                 }
 
                 $imap->disconnect();
@@ -1478,6 +1496,7 @@ function ahx_wp_mail_ajax_fetch_email() {
     $folder     = isset($_POST['folder']) ? sanitize_text_field(wp_unslash($_POST['folder'])) : 'INBOX';
     $uid        = isset($_POST['uid']) ? (int) $_POST['uid'] : 0;
     $debug_mode = !empty($_POST['debug']) && current_user_can('manage_options');
+    $force_allow_images = !empty($_POST['force_allow_images']);
 
     if (empty($host) || $uid <= 0) {
         wp_send_json_error(array('message' => 'Ungültige Parameter.'), 400);
@@ -1492,7 +1511,7 @@ function ahx_wp_mail_ajax_fetch_email() {
 
     // Absender prüfen bevor Body geladen wird (nur Header, kein Download)
     $sender_email = $imap->peek_sender($folder, $uid);
-    $allow_images = AHX_WP_Mail_User_Settings::is_sender_allowed($user_id, $sender_email);
+    $allow_images = $force_allow_images || AHX_WP_Mail_User_Settings::is_sender_allowed($user_id, $sender_email);
     $mark_mode    = get_option('ahx_wp_mail_mark_read_mode', 'open');
     $mark_as_read = ($mark_mode === 'open');
 
@@ -1502,7 +1521,7 @@ function ahx_wp_mail_ajax_fetch_email() {
         'allow_images' => $allow_images ? 1 : 0,
     ));
 
-    $email = (!$debug_mode) ? get_transient($detail_cache_key) : false;
+    $email = (!$debug_mode && !$force_allow_images) ? get_transient($detail_cache_key) : false;
     if (!is_array($email)) {
         $email = $imap->get_email($folder, $uid, $allow_images, $mark_as_read, $debug_mode);
         if (!is_wp_error($email) && !$debug_mode) {
