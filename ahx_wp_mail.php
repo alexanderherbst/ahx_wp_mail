@@ -2,7 +2,7 @@
 /**
  * Plugin Name: AHX WP Mail
  * Description: IMAP-Postfach-Viewer im Frontend mit benutzerspezifischen Zugangsdaten.
- * Version: v0.5.1
+ * Version: v0.6.0
  * Author: Alexander Herbst
  * Author URI: https://familie-herbst.de/ahx
  * License: GPL2
@@ -14,7 +14,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('AHX_WP_MAIL_VERSION', 'v0.5.1');
+define('AHX_WP_MAIL_VERSION', 'v0.6.0');
 define('AHX_WP_MAIL_FILE', __FILE__);
 define('AHX_WP_MAIL_DIR', plugin_dir_path(__FILE__));
 define('AHX_WP_MAIL_URL', plugin_dir_url(__FILE__));
@@ -463,6 +463,164 @@ function ahx_wp_mail_rule_matches($mail, $rule) {
 }
 
 /**
+ * Führt eine einzelne Regel sofort für einen Benutzer aus.
+ *
+ * @param int   $user_id
+ * @param array $rule
+ * @return array
+ */
+function ahx_wp_mail_execute_single_rule_for_user($user_id, $rule) {
+    $report = array(
+        'emails_checked' => 0,
+        'matches' => 0,
+        'actions_applied' => 0,
+        'errors' => array(),
+        'rule' => is_array($rule) ? $rule : array(),
+    );
+
+    if (!is_array($rule) || empty($rule['enabled'])) {
+        return $report;
+    }
+
+    $account_key = sanitize_key((string) ($rule['account_key'] ?? ''));
+    if ($account_key === '') {
+        $report['errors'][] = 'Regel hat kein gültiges Konto.';
+        return $report;
+    }
+
+    $settings = AHX_WP_Mail_User_Settings::get_account((int) $user_id, $account_key);
+    if (empty($settings['imap_user']) || empty($settings['imap_password'])) {
+        $report['errors'][] = 'IMAP-Zugangsdaten für das Regelkonto fehlen.';
+        return $report;
+    }
+
+    $host = $settings['imap_host'] ?: get_option('ahx_wp_mail_imap_host', '');
+    if ($host === '') {
+        $report['errors'][] = 'IMAP-Host ist nicht konfiguriert.';
+        return $report;
+    }
+
+    $port = (int) ($settings['imap_port'] ?: get_option('ahx_wp_mail_imap_port', 993));
+    $encryption = $settings['imap_encryption'] ?: get_option('ahx_wp_mail_imap_encryption', 'ssl');
+    $folder = (string) ($rule['folder'] ?? 'INBOX');
+    if ($folder === '') {
+        $folder = 'INBOX';
+    }
+
+    $imap = new AHX_WP_Mail_IMAP($host, $port, $encryption);
+    $connected = $imap->connect($settings['imap_user'], $settings['imap_password']);
+    if (is_wp_error($connected)) {
+        $report['errors'][] = $connected->get_error_message();
+        return $report;
+    }
+
+    try {
+        $page = 1;
+        $per_page = 50;
+        $max_pages = 4;
+        $emails_checked_in_rule = 0;
+        $max_emails_per_rule = 200;
+
+        while ($page <= $max_pages && $emails_checked_in_rule < $max_emails_per_rule) {
+            $emails = $imap->get_emails($folder, $page, $per_page, false, true);
+            if (!is_array($emails) || empty($emails)) {
+                break;
+            }
+
+            foreach ($emails as $mail) {
+                if ($emails_checked_in_rule >= $max_emails_per_rule) {
+                    break 2;
+                }
+
+                $emails_checked_in_rule++;
+                $report['emails_checked']++;
+
+                if (!ahx_wp_mail_rule_matches($mail, $rule)) {
+                    continue;
+                }
+
+                $uid = (int) ($mail['uid'] ?? 0);
+                if ($uid <= 0) {
+                    continue;
+                }
+
+                $report['matches']++;
+                $rule['match_count'] = max(0, (int) ($rule['match_count'] ?? 0)) + 1;
+                $rule['last_matched_at'] = gmdate('c');
+
+                $action = $rule['action'] ?? '';
+                $tag_set_before_action = false;
+                if (in_array($action, array('move', 'archive', 'delete'), true)) {
+                    $tag_result = $imap->mark_rule_processed($folder, $uid);
+                    $tag_set_before_action = !is_wp_error($tag_result);
+                }
+
+                $result = true;
+                if ($action === 'mark_read') {
+                    $result = $imap->mark_read($folder, $uid);
+                } elseif ($action === 'mark_unread') {
+                    $result = $imap->mark_unread($folder, $uid);
+                } elseif ($action === 'delete') {
+                    $result = $imap->delete_email($folder, $uid, (string) ($settings['trash_folder'] ?? ''));
+                } elseif ($action === 'move') {
+                    $target_folder = (string) ($rule['move_to_folder'] ?? '');
+                    if ($target_folder === '' || $target_folder === $folder) {
+                        continue;
+                    }
+                    $result = $imap->move_email($folder, $uid, $target_folder);
+                } elseif ($action === 'archive') {
+                    $year = (int) gmdate('Y');
+                    $mail_date = (string) ($mail['date'] ?? '');
+
+                    if (preg_match('/\b(\d{2})\.(\d{2})\.(\d{4})\b/', $mail_date, $dm)) {
+                        $year = (int) $dm[3];
+                    } elseif (preg_match('/\b((?:19|20)\d{2})\b/', $mail_date, $ym)) {
+                        $year = (int) $ym[1];
+                    }
+
+                    if ($year < 1900 || $year > 3000) {
+                        $year = (int) gmdate('Y');
+                    }
+
+                    $target_folder = 'Archives/' . $year;
+                    if (strcasecmp($target_folder, $folder) === 0) {
+                        continue;
+                    }
+                    $result = $imap->move_email($folder, $uid, $target_folder);
+                }
+
+                if (is_wp_error($result)) {
+                    if ($tag_set_before_action) {
+                        $imap->unmark_rule_processed($folder, $uid);
+                    }
+                    $report['errors'][] = sprintf('UID %d: %s', $uid, $result->get_error_message());
+                    continue;
+                }
+
+                if (!$tag_set_before_action) {
+                    $imap->mark_rule_processed($folder, $uid);
+                }
+
+                $report['actions_applied']++;
+                $rule['handled_count'] = max(0, (int) ($rule['handled_count'] ?? 0)) + 1;
+                $rule['last_handled_at'] = gmdate('c');
+            }
+
+            if (count($emails) < $per_page) {
+                break;
+            }
+
+            $page++;
+        }
+    } finally {
+        $imap->disconnect();
+    }
+
+    $report['rule'] = $rule;
+    return $report;
+}
+
+/**
  * Führt die konfigurierten Regeln aus.
  *
  * @param string $trigger manual|wp-cron|webhook
@@ -764,6 +922,7 @@ function ahx_wp_mail_ajax_add_rule() {
     }
 
     $index = isset($_POST['index']) ? (int) $_POST['index'] : -1;
+    $execute_now = !empty($_POST['execute_now']) && $index < 0;
     $normalized = ahx_wp_mail_normalize_rules(array($decoded));
     if (empty($normalized)) {
         wp_send_json_error(array('message' => 'Regel unvollständig oder ungültig (Konto/Bedingungen/Aktion prüfen).'), 400);
@@ -820,9 +979,64 @@ function ahx_wp_mail_ajax_add_rule() {
         wp_send_json_error(array('message' => 'Regel konnte nicht gespeichert werden.'), 500);
     }
 
-    wp_send_json_success(array('rules' => $saved_rules));
+    wp_send_json_success(array(
+        'rules' => $saved_rules,
+        'execute_requested' => $execute_now ? 1 : 0,
+        'rule_id' => $saved_id,
+    ));
 }
 add_action('wp_ajax_ahx_wp_mail_add_rule', 'ahx_wp_mail_ajax_add_rule');
+
+/**
+ * AJAX: Führt eine gespeicherte Regel sofort (asynchron zum Speichern) aus.
+ */
+function ahx_wp_mail_ajax_execute_rule_now() {
+    check_ajax_referer('ahx_wp_mail_nonce', 'nonce');
+
+    if (!is_user_logged_in()) {
+        wp_send_json_error(array('message' => 'Nicht eingeloggt.'), 403);
+    }
+
+    $user_id = get_current_user_id();
+    $rule_id = isset($_POST['rule_id']) ? sanitize_text_field(wp_unslash($_POST['rule_id'])) : '';
+    if ($rule_id === '') {
+        wp_send_json_error(array('message' => 'Regel-ID fehlt.'), 400);
+    }
+
+    $rules = ahx_wp_mail_get_user_rules((int) $user_id);
+    $rule_index = -1;
+    foreach ($rules as $i => $rule) {
+        if (!is_array($rule)) {
+            continue;
+        }
+        if (sanitize_text_field((string) ($rule['id'] ?? '')) === $rule_id) {
+            $rule_index = (int) $i;
+            break;
+        }
+    }
+
+    if ($rule_index < 0 || !isset($rules[$rule_index]) || !is_array($rules[$rule_index])) {
+        wp_send_json_error(array('message' => 'Regel nicht gefunden.'), 404);
+    }
+
+    $execution = ahx_wp_mail_execute_single_rule_for_user((int) $user_id, $rules[$rule_index]);
+    if (isset($execution['rule']) && is_array($execution['rule'])) {
+        $executed_account_key = sanitize_key((string) ($execution['rule']['account_key'] ?? ''));
+        $rules[$rule_index] = $execution['rule'];
+        ahx_wp_mail_save_user_rules((int) $user_id, $rules);
+        $rules = ahx_wp_mail_get_user_rules((int) $user_id);
+
+        if (!empty($execution['actions_applied']) && $executed_account_key !== '') {
+            ahx_wp_mail_bump_cache_version((int) $user_id, $executed_account_key);
+        }
+    }
+
+    wp_send_json_success(array(
+        'rules' => $rules,
+        'execution' => $execution,
+    ));
+}
+add_action('wp_ajax_ahx_wp_mail_execute_rule_now', 'ahx_wp_mail_ajax_execute_rule_now');
 
 /**
  * AJAX: Regel per Index loeschen.

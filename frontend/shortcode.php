@@ -233,6 +233,13 @@ function ahx_wp_mail_shortcode($atts) {
                             <option value=""><?php esc_html_e('Verschieben nach…', 'ahx_wp_mail'); ?></option>
                         </select>
                     </div>
+                    <div class="ahx-mail-rules-builder__row" id="ahx-mail-rule-execute-now-row" style="display:none;">
+                        <label for="ahx-mail-rule-execute-now"><?php esc_html_e('Sofort ausführen', 'ahx_wp_mail'); ?></label>
+                        <label class="ahx-mail-toolbar__filter" for="ahx-mail-rule-execute-now">
+                            <input type="checkbox" id="ahx-mail-rule-execute-now" />
+                            <span><?php esc_html_e('Regel direkt nach dem Speichern ausführen', 'ahx_wp_mail'); ?></span>
+                        </label>
+                    </div>
                     <div class="ahx-mail-rules-builder__actions">
                         <button class="ahx-mail-btn ahx-mail-btn--sm" id="ahx-mail-rule-fill-from-mail" type="button">
                             <?php esc_html_e('Aus aktueller Mail vorbelegen', 'ahx_wp_mail'); ?>

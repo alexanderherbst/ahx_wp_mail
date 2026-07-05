@@ -25,6 +25,7 @@
     var detailCacheOrder = [];
     var rulesReturnToDetail = false;
     var editingRuleIndex = -1;
+    var quickRuleMode = false;
     var folderSearchTerm = '';
     var favoriteFolders = [];
     var recentFolders = [];
@@ -1953,9 +1954,11 @@
         if (prefillFromCurrentMail !== false && currentMail) {
             // Quick-Regeln should always start as a new rule, not reuse a stale edit index.
             resetRuleBuilder();
+            setQuickRuleMode(true);
             showRuleBuilder();
             prefillRuleFromCurrentMail();
         } else if (editingRuleIndex < 0) {
+            setQuickRuleMode(false);
             hideRuleBuilder();
         }
 
@@ -2337,8 +2340,25 @@
         }
     }
 
+    function setQuickRuleMode(enabled) {
+        quickRuleMode = !!enabled;
+        var $row = $('#ahx-mail-rule-execute-now-row');
+        if (!$row.length) {
+            return;
+        }
+
+        if (quickRuleMode && editingRuleIndex < 0) {
+            $row.show();
+            $('#ahx-mail-rule-execute-now').prop('checked', true);
+        } else {
+            $row.hide();
+            $('#ahx-mail-rule-execute-now').prop('checked', false);
+        }
+    }
+
     function resetRuleBuilder() {
         editingRuleIndex = -1;
+        setQuickRuleMode(false);
         $('#ahx-mail-rule-name').val('');
         $('#ahx-mail-rule-folder').val('INBOX');
         $('#ahx-mail-rule-from').val('');
@@ -2373,6 +2393,7 @@
         }
 
         var rule = userRules[index] || {};
+        setQuickRuleMode(false);
         editingRuleIndex = index;
         $('#ahx-mail-rule-name').val(rule.name || getRuleDisplayName(rule));
         $('#ahx-mail-rule-folder').val(rule.folder || 'INBOX');
@@ -2629,11 +2650,14 @@
             rule.id = '';
         }
 
+        var executeNow = !canUpdateExisting && quickRuleMode && $('#ahx-mail-rule-execute-now').is(':checked');
+
         $.post(ahxMail.ajaxUrl, {
             action: 'ahx_wp_mail_add_rule',
             nonce: ahxMail.nonce,
             rule: JSON.stringify(rule),
             index: canUpdateExisting ? editingRuleIndex : -1,
+            execute_now: executeNow ? 1 : 0,
         })
         .done(function (resp) {
             if (resp.success && resp.data && Array.isArray(resp.data.rules)) {
@@ -2647,7 +2671,13 @@
                 renderRules();
                 resetRuleBuilder();
                 hideRuleBuilder();
-                setStatus('Regel gespeichert.');
+
+                if (executeNow && resp.data.execute_requested && resp.data.rule_id) {
+                    setStatus('Regel gespeichert. Sofortausführung läuft im Hintergrund…');
+                    executeRuleNowInBackground(resp.data.rule_id);
+                } else {
+                    setStatus('Regel gespeichert.');
+                }
             } else {
                 setStatus('Fehler: ' + (resp.data ? resp.data.message : 'Regel konnte nicht gespeichert werden.'));
             }
@@ -2663,6 +2693,48 @@
             } else {
                 setStatus('Verbindungsfehler beim Speichern der Regel.');
             }
+        });
+    }
+
+    function executeRuleNowInBackground(ruleId) {
+        if (!ruleId) {
+            return;
+        }
+
+        $.post(ahxMail.ajaxUrl, {
+            action: 'ahx_wp_mail_execute_rule_now',
+            nonce: ahxMail.nonce,
+            rule_id: ruleId,
+        })
+        .done(function (resp) {
+            if (!resp.success || !resp.data) {
+                setStatus('Regel gespeichert. Sofortausführung konnte nicht abgeschlossen werden.');
+                return;
+            }
+
+            if (Array.isArray(resp.data.rules)) {
+                userRules = resp.data.rules;
+                renderRules();
+            }
+
+            var execution = resp.data.execution && typeof resp.data.execution === 'object' ? resp.data.execution : null;
+            if (!execution) {
+                setStatus('Regel gespeichert. Sofortausführung abgeschlossen.');
+                return;
+            }
+
+            var actionsApplied = parseInt(execution.actions_applied || 0, 10) || 0;
+            var errorsCount = Array.isArray(execution.errors) ? execution.errors.length : 0;
+            if (errorsCount > 0) {
+                setStatus('Sofortausführung abgeschlossen mit Fehlern/Hinweisen.');
+            } else if (actionsApplied > 0) {
+                setStatus('Sofortausführung abgeschlossen (' + actionsApplied + ' Aktion' + (actionsApplied === 1 ? '' : 'en') + ').');
+            } else {
+                setStatus('Sofortausführung abgeschlossen (keine passenden E-Mails).');
+            }
+        })
+        .fail(function () {
+            setStatus('Regel gespeichert. Sofortausführung konnte nicht gestartet werden.');
         });
     }
 
