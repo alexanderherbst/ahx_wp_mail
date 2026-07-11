@@ -18,6 +18,7 @@ class AHX_WP_Mail_User_Settings {
     const META_IMAP_PORT       = 'ahx_wp_mail_imap_port';
     const META_IMAP_ENCRYPTION = 'ahx_wp_mail_imap_encryption';
     const META_EMAILS_PER_PAGE = 'ahx_wp_mail_emails_per_page';
+    const META_DETAIL_ACTION_AFTER = 'ahx_wp_mail_detail_action_after';
     const META_ALLOWED_SENDERS = 'ahx_wp_mail_allowed_senders'; // JSON-Array von E-Mail-Adressen
     const META_ALLOWED_DOMAINS = 'ahx_wp_mail_allowed_domains'; // JSON-Array von Domains
 
@@ -267,6 +268,7 @@ class AHX_WP_Mail_User_Settings {
         delete_user_meta($user_id, self::META_IMAP_PORT);
         delete_user_meta($user_id, self::META_IMAP_ENCRYPTION);
         delete_user_meta($user_id, self::META_EMAILS_PER_PAGE);
+        delete_user_meta($user_id, self::META_DETAIL_ACTION_AFTER);
         delete_user_meta($user_id, self::META_ALLOWED_SENDERS);
         delete_user_meta($user_id, self::META_ALLOWED_DOMAINS);
     }
@@ -533,6 +535,10 @@ class AHX_WP_Mail_User_Settings {
         $user_enc      = $active['imap_encryption'];
         $user_per_page = esc_attr($active['emails_per_page']);
         $user_trash    = esc_attr($active['trash_folder']);
+        $detail_action_after = sanitize_key((string) get_user_meta((int) $user->ID, self::META_DETAIL_ACTION_AFTER, true));
+        if (!in_array($detail_action_after, array('list', 'next'), true)) {
+            $detail_action_after = 'list';
+        }
         ?>
         <h2><?php esc_html_e('E-Mail-Konto (IMAP)', 'ahx_wp_mail'); ?></h2>
         <table class="form-table" role="presentation">
@@ -643,6 +649,16 @@ class AHX_WP_Mail_User_Settings {
                            min="1" max="200"
                            placeholder="<?php echo esc_attr($global_per_page); ?>" />
                     <p class="description"><?php esc_html_e('Leer lassen, um den globalen Standard zu verwenden.', 'ahx_wp_mail'); ?></p>
+                </td>
+            </tr>
+            <tr>
+                <th><label for="ahx_mail_detail_action_after"><?php esc_html_e('Nach Aktion in Detailansicht', 'ahx_wp_mail'); ?></label></th>
+                <td>
+                    <select name="ahx_mail_detail_action_after" id="ahx_mail_detail_action_after" class="regular-text">
+                        <option value="list" <?php selected($detail_action_after, 'list'); ?>><?php esc_html_e('Zurück zur Liste', 'ahx_wp_mail'); ?></option>
+                        <option value="next" <?php selected($detail_action_after, 'next'); ?>><?php esc_html_e('Zur nächsten Nachricht springen', 'ahx_wp_mail'); ?></option>
+                    </select>
+                    <p class="description"><?php esc_html_e('Gilt für Archivieren, Löschen und Verschieben in der Detailansicht.', 'ahx_wp_mail'); ?></p>
                 </td>
             </tr>
             <tr>
@@ -1046,6 +1062,14 @@ class AHX_WP_Mail_User_Settings {
                                     ? sanitize_text_field(wp_unslash($_POST['ahx_mail_trash_folder']))
                                     : '',
         ));
+
+        $detail_action_after = isset($_POST['ahx_mail_detail_action_after'])
+            ? sanitize_key(wp_unslash($_POST['ahx_mail_detail_action_after']))
+            : 'list';
+        if (!in_array($detail_action_after, array('list', 'next'), true)) {
+            $detail_action_after = 'list';
+        }
+        update_user_meta($user_id, self::META_DETAIL_ACTION_AFTER, $detail_action_after);
     }
 }
 

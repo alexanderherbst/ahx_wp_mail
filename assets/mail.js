@@ -39,21 +39,51 @@
     };
 
     var LIST_CACHE_PREFIX = 'ahx_wp_mail:list:';
+    var detailActionAfter = ((ahxMail.detailActionAfter || 'list') + '').toLowerCase();
+    if (detailActionAfter !== 'next') {
+        detailActionAfter = 'list';
+    }
+
+    function openMailByRowIndex(index) {
+        var rows = $('#ahx-mail-tbody tr').filter(function () {
+            return typeof $(this).data('uid') !== 'undefined';
+        });
+
+        if (index < 0 || index >= rows.length) {
+            return false;
+        }
+
+        var $target = $(rows.get(index));
+        state.openFolder = $target.data('folder');
+        loadEmail($target.data('uid'), $target.data('folder'));
+        return true;
+    }
+
+    function handleDetailActionAfterSuccess(currentRowIndex, removedUid) {
+        removeMailRowFromList(removedUid);
+        currentMail = null;
+        hideStickyActions();
+
+        if (detailActionAfter === 'next' && openMailByRowIndex(currentRowIndex)) {
+            loadEmails(true);
+            return;
+        }
+
+        showListPanel();
+        loadEmails();
+    }
 
     function deleteCurrentMail() {
         if (!currentMail) { return; }
         var msg = getDeleteConfirmMessage();
         if (!confirm(msg)) { return; }
         var deletedUid = currentMail.uid;
+        var currentRowIndex = getCurrentMailRowIndex();
         doAction('ahx_wp_mail_delete', {
             folder: state.openFolder || state.folder,
             uids:   [currentMail.uid],
         }, function () {
-            removeMailRowFromList(deletedUid);
-            currentMail = null;
-            hideStickyActions();
-            showListPanel();
-            loadEmails();
+            handleDetailActionAfterSuccess(currentRowIndex, deletedUid);
         });
     }
 
@@ -77,11 +107,7 @@
             to_folder: archiveFolder,
         }, function () {
             setStatus('Nach ' + archiveFolder + ' archiviert.');
-            removeMailRowFromList(currentMail.uid);
-            currentMail = null;
-            hideStickyActions();
-            showListPanel();
-            loadEmails();
+            handleDetailActionAfterSuccess(getCurrentMailRowIndex(), currentMail.uid);
         });
     }
 
@@ -261,16 +287,13 @@
             var target = $('#ahx-mail-detail-move-select').val();
             if (!target || target === '__show_all__') { return; }
             var movedUid = currentMail.uid;
+            var currentRowIndex = getCurrentMailRowIndex();
             doAction('ahx_wp_mail_move', {
                 folder:    state.openFolder || state.folder,
                 uids:      [currentMail.uid],
                 to_folder: target,
             }, function () {
-                removeMailRowFromList(movedUid);
-                currentMail = null;
-                hideStickyActions();
-                showListPanel();
-                loadEmails();
+                handleDetailActionAfterSuccess(currentRowIndex, movedUid);
             });
         });
 

@@ -2,7 +2,7 @@
 /**
  * Plugin Name: AHX WP Mail
  * Description: IMAP-Postfach-Viewer im Frontend mit benutzerspezifischen Zugangsdaten.
- * Version: v0.7.0
+ * Version: v0.8.0
  * Author: Alexander Herbst
  * Author URI: https://familie-herbst.de/ahx
  * License: GPL2
@@ -14,7 +14,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('AHX_WP_MAIL_VERSION', 'v0.7.0');
+define('AHX_WP_MAIL_VERSION', 'v0.8.0');
 define('AHX_WP_MAIL_FILE', __FILE__);
 define('AHX_WP_MAIL_DIR', plugin_dir_path(__FILE__));
 define('AHX_WP_MAIL_URL', plugin_dir_url(__FILE__));
@@ -1371,6 +1371,11 @@ function ahx_wp_mail_enqueue_assets() {
         return;
     }
 
+    $detail_action_after = sanitize_key((string) get_user_meta(get_current_user_id(), AHX_WP_Mail_User_Settings::META_DETAIL_ACTION_AFTER, true));
+    if (!in_array($detail_action_after, array('list', 'next'), true)) {
+        $detail_action_after = 'list';
+    }
+
     $base_path = plugin_dir_path(__FILE__);
     $css_path  = $base_path . 'assets/mail.css';
     $js_path   = $base_path . 'assets/mail.js';
@@ -1394,6 +1399,7 @@ function ahx_wp_mail_enqueue_assets() {
         'ajaxUrl' => admin_url('admin-ajax.php'),
         'nonce'   => wp_create_nonce('ahx_wp_mail_nonce'),
         'folderAliases' => ahx_wp_mail_get_folder_aliases(),
+        'detailActionAfter' => $detail_action_after,
     ));
 }
 add_action('wp_enqueue_scripts', 'ahx_wp_mail_enqueue_assets');
