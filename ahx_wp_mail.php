@@ -2,7 +2,7 @@
 /**
  * Plugin Name: AHX WP Mail
  * Description: IMAP-Postfach-Viewer im Frontend mit benutzerspezifischen Zugangsdaten.
- * Version: v0.6.0
+ * Version: v0.7.0
  * Author: Alexander Herbst
  * Author URI: https://familie-herbst.de/ahx
  * License: GPL2
@@ -14,7 +14,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('AHX_WP_MAIL_VERSION', 'v0.6.0');
+define('AHX_WP_MAIL_VERSION', 'v0.7.0');
 define('AHX_WP_MAIL_FILE', __FILE__);
 define('AHX_WP_MAIL_DIR', plugin_dir_path(__FILE__));
 define('AHX_WP_MAIL_URL', plugin_dir_url(__FILE__));
@@ -621,6 +621,87 @@ function ahx_wp_mail_execute_single_rule_for_user($user_id, $rule) {
 }
 
 /**
+ * Liefert das maximale Laufzeitbudget fuer den Regel-Runner in Sekunden.
+ *
+ * @param string $trigger
+ * @return int
+ */
+function ahx_wp_mail_rules_get_runtime_budget_seconds($trigger) {
+    $default_budget = 20;
+    $budget = (int) apply_filters('ahx_wp_mail_rules_runtime_budget_seconds', $default_budget, (string) $trigger);
+    return max(5, $budget);
+}
+
+/**
+ * Prueft, ob das Laufzeitbudget ueberschritten wurde.
+ *
+ * @param float $started_at
+ * @param int   $budget_seconds
+ * @return bool
+ */
+function ahx_wp_mail_rules_runtime_exceeded($started_at, $budget_seconds) {
+    return (microtime(true) - (float) $started_at) >= (float) $budget_seconds;
+}
+
+/**
+ * Liefert die aktuelle Resume-Position des Regel-Runners.
+ *
+ * @return array{user_index:int,account_index:int,rule_index:int}
+ */
+function ahx_wp_mail_rules_get_cursor() {
+    $cursor = get_transient('ahx_wp_mail_rules_runner_cursor');
+    if (!is_array($cursor)) {
+        return array(
+            'user_index' => 0,
+            'account_index' => 0,
+            'rule_index' => 0,
+        );
+    }
+
+    return array(
+        'user_index' => max(0, (int) ($cursor['user_index'] ?? 0)),
+        'account_index' => max(0, (int) ($cursor['account_index'] ?? 0)),
+        'rule_index' => max(0, (int) ($cursor['rule_index'] ?? 0)),
+    );
+}
+
+/**
+ * Speichert die Resume-Position des Regel-Runners.
+ *
+ * @param int $user_index
+ * @param int $account_index
+ * @param int $rule_index
+ */
+function ahx_wp_mail_rules_set_cursor($user_index, $account_index, $rule_index) {
+    set_transient('ahx_wp_mail_rules_runner_cursor', array(
+        'user_index' => max(0, (int) $user_index),
+        'account_index' => max(0, (int) $account_index),
+        'rule_index' => max(0, (int) $rule_index),
+    ), 15 * MINUTE_IN_SECONDS);
+}
+
+/**
+ * Entfernt die Resume-Position des Regel-Runners.
+ */
+function ahx_wp_mail_rules_clear_cursor() {
+    delete_transient('ahx_wp_mail_rules_runner_cursor');
+}
+
+/**
+ * Plant eine zeitnahe Fortsetzung des Regel-Runners.
+ *
+ * @return bool
+ */
+function ahx_wp_mail_rules_schedule_continuation() {
+    if (!wp_next_scheduled('ahx_wp_mail_rules_continue_event')) {
+        wp_schedule_single_event(time() + 15, 'ahx_wp_mail_rules_continue_event');
+        return true;
+    }
+
+    return false;
+}
+
+/**
  * Führt die konfigurierten Regeln aus.
  *
  * @param string $trigger manual|wp-cron|webhook
@@ -628,6 +709,8 @@ function ahx_wp_mail_execute_single_rule_for_user($user_id, $rule) {
  */
 function ahx_wp_mail_run_rules($trigger = 'manual') {
     $global_rules = ahx_wp_mail_normalize_rules(ahx_wp_mail_get_rules());
+    $started_at = microtime(true);
+    $runtime_budget_seconds = ahx_wp_mail_rules_get_runtime_budget_seconds((string) $trigger);
 
     $report = array(
         'trigger' => (string) $trigger,
@@ -636,6 +719,8 @@ function ahx_wp_mail_run_rules($trigger = 'manual') {
         'accounts_checked' => 0,
         'emails_checked' => 0,
         'actions_applied' => 0,
+        'timed_out' => false,
+        'continuation_scheduled' => false,
         'errors' => array(),
     );
 
@@ -657,6 +742,9 @@ function ahx_wp_mail_run_rules($trigger = 'manual') {
     set_transient($lock_key, 1, 60);
     set_transient($lock_timestamp_key, $current_time, 60);
 
+    $cursor = ahx_wp_mail_rules_get_cursor();
+    $should_stop = false;
+
     $user_query = new WP_User_Query(array(
         'number' => 500,
         'fields' => array('ID'),
@@ -670,7 +758,19 @@ function ahx_wp_mail_run_rules($trigger = 'manual') {
 
     try {
         $users = $user_query->get_results();
-        foreach ($users as $user) {
+        $users = is_array($users) ? array_values($users) : array();
+
+        foreach ($users as $user_index => $user) {
+            if ($user_index < (int) $cursor['user_index']) {
+                continue;
+            }
+
+            if (ahx_wp_mail_rules_runtime_exceeded($started_at, $runtime_budget_seconds)) {
+                $should_stop = true;
+                ahx_wp_mail_rules_set_cursor((int) $user_index, 0, 0);
+                break;
+            }
+
             $user_id = (int) $user->ID;
             $report['users_checked']++;
 
@@ -691,9 +791,24 @@ function ahx_wp_mail_run_rules($trigger = 'manual') {
                 continue;
             }
 
+            $account_keys = array_values(array_map('strval', array_keys($accounts)));
+            if (empty($account_keys)) {
+                continue;
+            }
+
             $rules_changed = false;
 
-            foreach (array_keys($accounts) as $account_key) {
+            foreach ($account_keys as $account_index => $account_key) {
+                if ($user_index === (int) $cursor['user_index'] && $account_index < (int) $cursor['account_index']) {
+                    continue;
+                }
+
+                if (ahx_wp_mail_rules_runtime_exceeded($started_at, $runtime_budget_seconds)) {
+                    $should_stop = true;
+                    ahx_wp_mail_rules_set_cursor((int) $user_index, (int) $account_index, 0);
+                    break;
+                }
+
                 $settings = AHX_WP_Mail_User_Settings::get_account($user_id, (string) $account_key);
                 if (empty($settings['imap_user']) || empty($settings['imap_password'])) {
                     continue;
@@ -716,8 +831,27 @@ function ahx_wp_mail_run_rules($trigger = 'manual') {
 
                 $report['accounts_checked']++;
                 $account_changed = false;
+                $rule_start_index = ($user_index === (int) $cursor['user_index'] && $account_index === (int) $cursor['account_index'])
+                    ? (int) $cursor['rule_index']
+                    : 0;
+
+                $rule_count = count($rules);
+
+                if ($rule_start_index >= $rule_count && $rule_count > 0) {
+                    $rule_start_index = 0;
+                }
 
                 foreach ($rules as $rule_index => $rule) {
+                    if ($rule_index < $rule_start_index) {
+                        continue;
+                    }
+
+                    if (ahx_wp_mail_rules_runtime_exceeded($started_at, $runtime_budget_seconds)) {
+                        $should_stop = true;
+                        ahx_wp_mail_rules_set_cursor((int) $user_index, (int) $account_index, (int) $rule_index);
+                        break;
+                    }
+
                     if (empty($rule['enabled'])) {
                         continue;
                     }
@@ -735,6 +869,12 @@ function ahx_wp_mail_run_rules($trigger = 'manual') {
                     $max_emails_per_rule = 200;
 
                     while ($page <= $max_pages && $emails_checked_in_rule < $max_emails_per_rule) {
+                        if (ahx_wp_mail_rules_runtime_exceeded($started_at, $runtime_budget_seconds)) {
+                            $should_stop = true;
+                            ahx_wp_mail_rules_set_cursor((int) $user_index, (int) $account_index, (int) $rule_index);
+                            break 2;
+                        }
+
                         $emails = $imap->get_emails($folder, $page, $per_page, false, true);
                         if (!is_array($emails) || empty($emails)) {
                             if ($page === 1) {
@@ -755,6 +895,12 @@ function ahx_wp_mail_run_rules($trigger = 'manual') {
                         foreach ($emails as $mail) {
                             if ($emails_checked_in_rule >= $max_emails_per_rule) {
                                 break 2;
+                            }
+
+                            if (ahx_wp_mail_rules_runtime_exceeded($started_at, $runtime_budget_seconds)) {
+                                $should_stop = true;
+                                ahx_wp_mail_rules_set_cursor((int) $user_index, (int) $account_index, (int) $rule_index);
+                                break 3;
                             }
 
                             $report['emails_checked']++;
@@ -837,6 +983,12 @@ function ahx_wp_mail_run_rules($trigger = 'manual') {
 
                         $page++;
                     }
+
+                    if ($should_stop) {
+                        break;
+                    }
+
+                    ahx_wp_mail_rules_set_cursor((int) $user_index, (int) $account_index, (int) ($rule_index + 1));
                 }
 
                 if ($account_changed) {
@@ -844,6 +996,12 @@ function ahx_wp_mail_run_rules($trigger = 'manual') {
                 }
 
                 $imap->disconnect();
+
+                if ($should_stop) {
+                    break;
+                }
+
+                ahx_wp_mail_rules_set_cursor((int) $user_index, (int) ($account_index + 1), 0);
             }
 
             if ($rules_changed) {
@@ -854,6 +1012,23 @@ function ahx_wp_mail_run_rules($trigger = 'manual') {
                     ahx_wp_mail_save_user_rules($user_id, $rules);
                 }
             }
+
+            if ($should_stop) {
+                break;
+            }
+
+            ahx_wp_mail_rules_set_cursor((int) ($user_index + 1), 0, 0);
+        }
+
+        if ($should_stop) {
+            $report['timed_out'] = true;
+            $report['errors'][] = sprintf(
+                'Zeitbudget von %ds erreicht. Fortsetzung wird geplant.',
+                (int) $runtime_budget_seconds
+            );
+            $report['continuation_scheduled'] = ahx_wp_mail_rules_schedule_continuation();
+        } else {
+            ahx_wp_mail_rules_clear_cursor();
         }
     } finally {
         delete_transient($lock_key);
@@ -870,6 +1045,14 @@ function ahx_wp_mail_rules_cron_event_handler() {
     ahx_wp_mail_run_rules('wp-cron');
 }
 add_action('ahx_wp_mail_rules_cron_event', 'ahx_wp_mail_rules_cron_event_handler');
+
+/**
+ * Handler fuer zeitversetzte Fortsetzungslaeufe.
+ */
+function ahx_wp_mail_rules_continue_event_handler() {
+    ahx_wp_mail_run_rules('continue');
+}
+add_action('ahx_wp_mail_rules_continue_event', 'ahx_wp_mail_rules_continue_event_handler');
 
 /**
  * AJAX: Regeln des aktuellen Benutzers laden.

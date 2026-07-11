@@ -50,6 +50,13 @@ class AHX_WP_Mail_IMAP {
             return new WP_Error('imap_missing', 'PHP-IMAP-Extension ist nicht aktiviert.');
         }
 
+        if (function_exists('imap_timeout')) {
+            @imap_timeout(IMAP_OPENTIMEOUT, 10);
+            @imap_timeout(IMAP_READTIMEOUT, 15);
+            @imap_timeout(IMAP_WRITETIMEOUT, 15);
+            @imap_timeout(IMAP_CLOSETIMEOUT, 10);
+        }
+
         $mailbox = $this->build_mailbox_string('INBOX');
 
         // Fehler-Unterdrückung, da imap_open() PHP-Warnungen erzeugen kann.

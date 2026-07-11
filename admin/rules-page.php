@@ -32,19 +32,25 @@ function ahx_wp_mail_rules_page() {
 
     if (isset($_POST['ahx_wp_mail_rules_run_now'])) {
         check_admin_referer('ahx_wp_mail_rules_save');
-        set_time_limit(300);
         $report = ahx_wp_mail_run_rules('manual');
         $error_display = '';
         if (!empty($report['errors'])) {
             $error_sample = implode('; ', array_slice($report['errors'], 0, 5));
             $error_display = '<br><small style="color:#666;">' . esc_html($error_sample) . '</small>';
         }
+
+        $status_suffix = '';
+        if (!empty($report['timed_out'])) {
+            $status_suffix = ' Teilausführung: Fortsetzung läuft automatisch im Hintergrund.';
+        }
+
         echo '<div class="notice notice-info"><p>'
             . esc_html(sprintf(
-                'Regeln ausgeführt: %d Aktion(en), %d E-Mails geprüft, %d Fehler.',
+                'Regeln ausgeführt: %d Aktion(en), %d E-Mails geprüft, %d Fehler.%s',
                 (int) ($report['actions_applied'] ?? 0),
                 (int) ($report['emails_checked'] ?? 0),
-                count((array) ($report['errors'] ?? array()))
+                count((array) ($report['errors'] ?? array())),
+                $status_suffix
             ))
             . $error_display
             . '</p></div>';
