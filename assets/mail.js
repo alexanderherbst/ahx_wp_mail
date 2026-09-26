@@ -75,12 +75,12 @@
 
     function deleteCurrentMail() {
         if (!currentMail) { return; }
-        var msg = getDeleteConfirmMessage();
-        if (!confirm(msg)) { return; }
+        var sourceFolder = state.openFolder || state.folder;
+        if (shouldConfirmDelete(sourceFolder) && !confirm(getDeleteConfirmMessage(sourceFolder))) { return; }
         var deletedUid = currentMail.uid;
         var currentRowIndex = getCurrentMailRowIndex();
         doAction('ahx_wp_mail_delete', {
-            folder: state.openFolder || state.folder,
+            folder: sourceFolder,
             uids:   [currentMail.uid],
         }, function () {
             handleDetailActionAfterSuccess(currentRowIndex, deletedUid);
@@ -111,9 +111,14 @@
         });
     }
 
-    function getDeleteConfirmMessage() {
+    function shouldConfirmDelete(folder) {
         var trashFolder = accountTrashFolders[state.accountKey] || '';
-        if (trashFolder === '' || trashFolder.toLowerCase() === state.folder.toLowerCase()) {
+        return trashFolder === '' || trashFolder.toLowerCase() === (folder || '').toLowerCase();
+    }
+
+    function getDeleteConfirmMessage(folder) {
+        var trashFolder = accountTrashFolders[state.accountKey] || '';
+        if (shouldConfirmDelete(folder)) {
             return 'Ausgewählte E-Mails und Ordner wirklich unwiederbringlich löschen?';
         }
         return 'Ausgewählte E-Mails wirklich in ' + trashFolder + ' verschieben?';
@@ -262,8 +267,7 @@
             bulkArchive();
         });
         $(document).on('click', '#ahx-mail-bulk-delete', function () {
-            var msg = getDeleteConfirmMessage();
-            if (!confirm(msg)) { return; }
+            if (shouldConfirmDelete(state.folder) && !confirm(getDeleteConfirmMessage(state.folder))) { return; }
             bulkDelete();
         });
         $(document).on('click', '#ahx-mail-bulk-move', function () {
