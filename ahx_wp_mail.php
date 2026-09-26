@@ -2,7 +2,7 @@
 /**
  * Plugin Name: AHX WP Mail
  * Description: IMAP-Postfach-Viewer im Frontend mit benutzerspezifischen Zugangsdaten.
- * Version: v0.9.0
+ * Version: v0.10.0
  * Author: Alexander Herbst
  * Author URI: https://familie-herbst.de/ahx
  * License: GPL2
@@ -14,7 +14,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('AHX_WP_MAIL_VERSION', 'v0.9.0');
+define('AHX_WP_MAIL_VERSION', 'v0.10.0');
 define('AHX_WP_MAIL_FILE', __FILE__);
 define('AHX_WP_MAIL_DIR', plugin_dir_path(__FILE__));
 define('AHX_WP_MAIL_URL', plugin_dir_url(__FILE__));
@@ -1361,6 +1361,48 @@ function ahx_wp_mail_admin_menu() {
     );
 }
 add_action('admin_menu', 'ahx_wp_mail_admin_menu');
+
+function ahx_wp_mail_add_my_sites_admin_bar_links($wp_admin_bar) {
+    if (!is_multisite()) {
+        return;
+    }
+
+    $sites = get_blogs_of_user(get_current_user_id());
+    if (empty($sites)) {
+        return;
+    }
+
+    $plugin_file = plugin_basename(AHX_WP_MAIL_FILE);
+    $network_active_plugins = (array) get_site_option('active_sitewide_plugins', []);
+
+    foreach ($sites as $site) {
+        $site_id = (int) $site->userblog_id;
+        $site_active_plugins = (array) get_blog_option($site_id, 'active_plugins', []);
+        if (!isset($network_active_plugins[$plugin_file]) && !in_array($plugin_file, $site_active_plugins, true)) {
+            continue;
+        }
+
+        switch_to_blog($site_id);
+        $can_access_mail_page = current_user_can('manage_options');
+        $mail_page_url = admin_url('admin.php?page=ahx_wp_mail-main');
+        restore_current_blog();
+
+        if (!$can_access_mail_page) {
+            continue;
+        }
+
+        $wp_admin_bar->add_node([
+            'id' => 'ahx-wp-mail-site-' . $site_id,
+            'parent' => 'blog-' . $site_id,
+            'title' => esc_html__('AHX Mail', 'ahx_wp_mail'),
+            'href' => $mail_page_url,
+            'meta' => [
+                'title' => esc_attr__('AHX WP Mail öffnen', 'ahx_wp_mail'),
+            ],
+        ]);
+    }
+}
+add_action('admin_bar_menu', 'ahx_wp_mail_add_my_sites_admin_bar_links', 100);
 
 // ---------------------------------------------------------------------------
 // Assets
