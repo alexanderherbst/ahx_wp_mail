@@ -935,6 +935,18 @@
     margin-bottom: 10px;
 }
 
+.ahx-mail-rules-builder__section-title {
+    margin: 4px 0 10px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid #dce3ec;
+    color: #172433;
+    font-size: 14px;
+}
+
+.ahx-mail-rules-builder__section-title:not(:first-child) {
+    margin-top: 18px;
+}
+
 #ahx-mail-rules-list {
     flex: 1;
     min-height: 0;

@@ -372,6 +372,11 @@
             showRulesPanel(true);
         });
 
+        $(document).on('click', '#ahx-mail-detail-rule-extend', function () {
+            showRulesPanel(false);
+            setStatus('Wähle eine Regel für dieses Konto und diesen Ordner aus.');
+        });
+
         $(document).on('click', '#ahx-mail-rules-panel-close', function () {
             hideRulesPanel();
         });
@@ -388,9 +393,9 @@
             }
         });
 
-        $(document).on('click', '#ahx-mail-rule-fill-from-mail', function () {
+        $(document).on('click', '.ahx-mail-rule-prefill', function () {
             showRuleBuilder();
-            prefillRuleFromCurrentMail();
+            prefillRuleFromCurrentMail($(this).closest('.ahx-mail-rule-condition'));
         });
 
         $(document).on('click', '#ahx-mail-rule-add-group', function () {
@@ -418,6 +423,12 @@
             var index = parseInt($(this).data('index'), 10);
             if (isNaN(index)) { return; }
             editRule(index);
+        });
+
+        $(document).on('click', '.ahx-mail-rule-extend', function () {
+            var index = parseInt($(this).data('index'), 10);
+            if (isNaN(index)) { return; }
+            extendRuleFromCurrentMail(index);
         });
 
         $(document).on('click', '.ahx-mail-rule-delete', function () {
@@ -1983,7 +1994,7 @@
             resetRuleBuilder();
             setQuickRuleMode(true);
             showRuleBuilder();
-            prefillRuleFromCurrentMail();
+            prefillRuleFromCurrentMail($('#ahx-mail-rules-builder .ahx-mail-rule-condition--primary'));
         } else if (editingRuleIndex < 0) {
             setQuickRuleMode(false);
             hideRuleBuilder();
@@ -2308,12 +2319,18 @@
     }
 
     function createRuleConditionGroupElement(group, groupNumber) {
-        var $group = $('<div>').addClass('ahx-mail-rule-group');
+        var $group = $('<div>').addClass('ahx-mail-rule-group ahx-mail-rule-condition');
         var title = 'ODER-Bedingung ' + groupNumber;
 
         $group.append(
             $('<div>').addClass('ahx-mail-rule-group__header')
                 .append($('<span>').addClass('ahx-mail-rule-group__title').text(title))
+                .append(
+                    $('<button>')
+                        .addClass('ahx-mail-btn ahx-mail-btn--sm ahx-mail-rule-prefill')
+                        .attr('type', 'button')
+                        .text('Aus aktueller Mail vorbelegen')
+                )
                 .append(
                     $('<button>')
                         .addClass('ahx-mail-btn ahx-mail-btn--sm ahx-mail-rule-group-remove')
@@ -2325,17 +2342,17 @@
         $group.append(
             $('<div>').addClass('ahx-mail-rules-builder__row')
                 .append($('<label>').text('Von enthält'))
-                .append($('<input>').addClass('regular-text ahx-mail-rule-group__from').val((group && group.from_contains) || ''))
+                .append($('<input>').addClass('regular-text ahx-mail-rule-group__from ahx-mail-rule-condition__from').val((group && group.from_contains) || ''))
         );
         $group.append(
             $('<div>').addClass('ahx-mail-rules-builder__row')
                 .append($('<label>').text('An enthält'))
-                .append($('<input>').addClass('regular-text ahx-mail-rule-group__to').val((group && group.to_contains) || ''))
+                .append($('<input>').addClass('regular-text ahx-mail-rule-group__to ahx-mail-rule-condition__to').val((group && group.to_contains) || ''))
         );
         $group.append(
             $('<div>').addClass('ahx-mail-rules-builder__row')
                 .append($('<label>').text('Betreff enthält'))
-                .append($('<input>').addClass('regular-text ahx-mail-rule-group__subject').val((group && group.subject_contains) || ''))
+                .append($('<input>').addClass('regular-text ahx-mail-rule-group__subject ahx-mail-rule-condition__subject').val((group && group.subject_contains) || ''))
         );
 
         return $group;
@@ -2550,6 +2567,15 @@
                             .text('Bearbeiten')
                     )
                     .append(
+                        canExtendRuleFromCurrentMail(rule)
+                            ? $('<button>')
+                                .addClass('ahx-mail-btn ahx-mail-btn--sm ahx-mail-rule-extend')
+                                .attr('type', 'button')
+                                .attr('data-index', index)
+                                .text('Diese Mail ergänzen')
+                            : $()
+                    )
+                    .append(
                         $('<button>')
                             .addClass('ahx-mail-btn ahx-mail-btn--sm ahx-mail-rule-delete')
                             .attr('type', 'button')
@@ -2559,6 +2585,12 @@
             );
             $list.append($item);
         });
+
+        if (currentMail && !userRules.some(canExtendRuleFromCurrentMail)) {
+            $list.append(
+                $('<li>').addClass('ahx-mail-rule-item').text('Keine bestehende Regel für dieses Konto und diesen Ordner gefunden.')
+            );
+        }
     }
 
     function updateRulesCountBadge() {
@@ -2572,9 +2604,12 @@
         $badge.toggleClass('ahx-mail-nav-group__badge--empty', count === 0);
     }
 
-    function prefillRuleFromCurrentMail() {
+    function prefillRuleFromCurrentMail($condition) {
         if (!currentMail) {
             setStatus('Keine geöffnete Mail zum Vorbelegen.');
+            return;
+        }
+        if (!$condition || !$condition.length) {
             return;
         }
 
@@ -2597,9 +2632,60 @@
 
         $('#ahx-mail-rule-folder').val(state.openFolder || state.folder || 'INBOX');
         syncRuleAccountSelection(true);
-        $('#ahx-mail-rule-from').val(fromValue);
-        $('#ahx-mail-rule-to').val(to);
-        $('#ahx-mail-rule-subject').val(subject);
+        $condition.find('.ahx-mail-rule-condition__from').val(fromValue);
+        $condition.find('.ahx-mail-rule-condition__to').val(to);
+        $condition.find('.ahx-mail-rule-condition__subject').val(subject);
+    }
+
+    function canExtendRuleFromCurrentMail(rule) {
+        if (!currentMail || !rule) {
+            return false;
+        }
+
+        var sourceFolder = (state.openFolder || state.folder || 'INBOX').toString().toLowerCase();
+        var ruleFolder = (rule.folder || 'INBOX').toString().toLowerCase();
+        return (rule.account_key || '') === state.accountKey && ruleFolder === sourceFolder;
+    }
+
+    function extendRuleFromCurrentMail(index) {
+        var rule = Array.isArray(userRules) ? userRules[index] : null;
+        if (!currentMail || !canExtendRuleFromCurrentMail(rule)) {
+            return;
+        }
+
+        var from = (currentMail.from || '').toString();
+        var match = from.match(/<([^>]+)>/);
+        var condition = {
+            from_contains: (match ? match[1] : from).trim(),
+            to_contains: (currentMail.to || '').toString().trim(),
+            subject_contains: (currentMail.subject || '').toString().trim(),
+        };
+        if (!condition.from_contains) {
+            setStatus('Der Absender dieser Mail konnte nicht ermittelt werden.');
+            return;
+        }
+
+        editRule(index);
+        var existingGroups = Array.isArray(rule.match_any) ? rule.match_any : [];
+        var matchingIndex = existingGroups.findIndex(function (group) {
+            return (group.from_contains || '').toString().trim().toLowerCase() === condition.from_contains.toLowerCase()
+                && (group.to_contains || '').toString().trim().toLowerCase() === condition.to_contains.toLowerCase()
+                && (group.subject_contains || '').toString().trim().toLowerCase() === condition.subject_contains.toLowerCase();
+        });
+
+        if (matchingIndex >= 0) {
+            var $existingCondition = matchingIndex === 0
+                ? $('#ahx-mail-rules-builder .ahx-mail-rule-condition--primary')
+                : $('#ahx-mail-rule-groups .ahx-mail-rule-group').eq(matchingIndex - 1);
+            $existingCondition.find('.ahx-mail-rule-condition__subject').trigger('focus');
+            setStatus('Diese Bedingung ist bereits vorhanden. Du kannst sie jetzt bearbeiten und die Regel aktualisieren.');
+            return;
+        }
+
+        addRuleConditionGroup(condition);
+        var $newCondition = $('#ahx-mail-rule-groups .ahx-mail-rule-group').last();
+        $newCondition.find('.ahx-mail-rule-condition__subject').trigger('focus');
+        setStatus('Bedingung ergänzt. Passe sie an und klicke anschließend auf „Regel aktualisieren“.');
     }
 
     function syncRuleAccountSelection(force) {

@@ -178,6 +178,7 @@ function ahx_wp_mail_shortcode($atts) {
                 </div>
 
                 <div class="ahx-mail-rules-builder" id="ahx-mail-rules-builder" style="display:none;">
+                    <h3 class="ahx-mail-rules-builder__section-title"><?php esc_html_e('Wenn eine Nachricht diese Kriterien erfüllt', 'ahx_wp_mail'); ?></h3>
                     <div class="ahx-mail-rules-builder__row">
                         <label for="ahx-mail-rule-account"><?php esc_html_e('Konto', 'ahx_wp_mail'); ?></label>
                         <select id="ahx-mail-rule-account" class="ahx-mail-select">
@@ -196,27 +197,36 @@ function ahx_wp_mail_shortcode($atts) {
                         <label for="ahx-mail-rule-folder"><?php esc_html_e('Ordner', 'ahx_wp_mail'); ?></label>
                         <input type="text" id="ahx-mail-rule-folder" class="regular-text" value="INBOX" />
                     </div>
-                    <div class="ahx-mail-rules-builder__row">
-                        <label for="ahx-mail-rule-from"><?php esc_html_e('Von enthält', 'ahx_wp_mail'); ?></label>
-                        <input type="text" id="ahx-mail-rule-from" class="regular-text" />
-                    </div>
-                    <div class="ahx-mail-rules-builder__row">
-                        <label for="ahx-mail-rule-to"><?php esc_html_e('An enthält', 'ahx_wp_mail'); ?></label>
-                        <input type="text" id="ahx-mail-rule-to" class="regular-text" />
-                    </div>
-                    <div class="ahx-mail-rules-builder__row">
-                        <label for="ahx-mail-rule-subject"><?php esc_html_e('Betreff enthält', 'ahx_wp_mail'); ?></label>
-                        <input type="text" id="ahx-mail-rule-subject" class="regular-text" />
+                    <div class="ahx-mail-rule-condition ahx-mail-rule-condition--primary">
+                        <div class="ahx-mail-rule-group__header">
+                            <span class="ahx-mail-rule-group__title"><?php esc_html_e('Bedingung 1', 'ahx_wp_mail'); ?></span>
+                            <button class="ahx-mail-btn ahx-mail-btn--sm ahx-mail-rule-prefill" type="button">
+                                <?php esc_html_e('Aus aktueller Mail vorbelegen', 'ahx_wp_mail'); ?>
+                            </button>
+                        </div>
+                        <div class="ahx-mail-rules-builder__row">
+                            <label for="ahx-mail-rule-from"><?php esc_html_e('Absender enthält', 'ahx_wp_mail'); ?></label>
+                            <input type="text" id="ahx-mail-rule-from" class="regular-text ahx-mail-rule-condition__from" />
+                        </div>
+                        <div class="ahx-mail-rules-builder__row">
+                            <label for="ahx-mail-rule-to"><?php esc_html_e('Empfänger enthält', 'ahx_wp_mail'); ?></label>
+                            <input type="text" id="ahx-mail-rule-to" class="regular-text ahx-mail-rule-condition__to" />
+                        </div>
+                        <div class="ahx-mail-rules-builder__row">
+                            <label for="ahx-mail-rule-subject"><?php esc_html_e('Betreff enthält', 'ahx_wp_mail'); ?></label>
+                            <input type="text" id="ahx-mail-rule-subject" class="regular-text ahx-mail-rule-condition__subject" />
+                        </div>
                     </div>
                     <div class="ahx-mail-rules-builder__hint">
-                        <?php esc_html_e('Weitere Bedingungen werden als ODER-Gruppen hinzugefügt.', 'ahx_wp_mail'); ?>
+                        <?php esc_html_e('Kriterien innerhalb einer Bedingung gelten gemeinsam. Weitere Bedingungen werden alternativ geprüft (ODER).', 'ahx_wp_mail'); ?>
                     </div>
                     <div id="ahx-mail-rule-groups" class="ahx-mail-rule-groups"></div>
                     <div class="ahx-mail-rules-builder__actions ahx-mail-rules-builder__actions--stacked">
                         <button class="ahx-mail-btn ahx-mail-btn--sm" id="ahx-mail-rule-add-group" type="button">
-                            <?php esc_html_e('ODER-Bedingung hinzufügen', 'ahx_wp_mail'); ?>
+                            <?php esc_html_e('Weitere ODER-Bedingung hinzufügen', 'ahx_wp_mail'); ?>
                         </button>
                     </div>
+                    <h3 class="ahx-mail-rules-builder__section-title"><?php esc_html_e('Dann folgende Aktion ausführen', 'ahx_wp_mail'); ?></h3>
                     <div class="ahx-mail-rules-builder__row">
                         <label for="ahx-mail-rule-action"><?php esc_html_e('Aktion', 'ahx_wp_mail'); ?></label>
                         <select id="ahx-mail-rule-action" class="ahx-mail-select">
@@ -241,9 +251,6 @@ function ahx_wp_mail_shortcode($atts) {
                         </label>
                     </div>
                     <div class="ahx-mail-rules-builder__actions">
-                        <button class="ahx-mail-btn ahx-mail-btn--sm" id="ahx-mail-rule-fill-from-mail" type="button">
-                            <?php esc_html_e('Aus aktueller Mail vorbelegen', 'ahx_wp_mail'); ?>
-                        </button>
                         <button class="ahx-mail-btn ahx-mail-btn--sm" id="ahx-mail-rule-save" type="button">
                             <?php esc_html_e('Regel speichern', 'ahx_wp_mail'); ?>
                         </button>
@@ -290,7 +297,10 @@ function ahx_wp_mail_shortcode($atts) {
                         &#x2192; <?php esc_html_e('Verschieben', 'ahx_wp_mail'); ?>
                     </button>
                     <button class="ahx-mail-btn ahx-mail-btn--sm" id="ahx-mail-detail-rules-toggle" type="button">
-                        <?php esc_html_e('Quick-Regeln', 'ahx_wp_mail'); ?>
+                        <?php esc_html_e('Regel aus dieser Mail erstellen', 'ahx_wp_mail'); ?>
+                    </button>
+                    <button class="ahx-mail-btn ahx-mail-btn--sm" id="ahx-mail-detail-rule-extend" type="button">
+                        <?php esc_html_e('Bestehende Regel ergänzen', 'ahx_wp_mail'); ?>
                     </button>
                 </div>
 
